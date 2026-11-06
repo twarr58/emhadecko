@@ -140,3 +140,20 @@ test("přestupní tablo: povolené parametry projdou, ostatní 400", async () =>
   ]) assert.equal((await req(q)).status, 400, q);
   assert.equal(calls.length, 1);
 });
+
+test("trasa spoje: podle trip_id, jen scopes=shapes, dlouhá cache", async () => {
+  let r = await req("/v2/public/gtfs/trips/331_926_260627?scopes=shapes");
+  assert.equal(r.status, 200);
+  assert.equal(new URL(calls[0].url).pathname, "/v2/public/gtfs/trips/331_926_260627");
+  r = await req("/v2/public/gtfs/trips/331_926_260627?scopes=shapes");
+  assert.equal(calls.length, 1, "druhý dotaz jde z cache");
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627?scopes=stop_times")).status, 400);
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627")).status, 400);
+});
+
+test("detail vozidla se necachuje dlouho ani pro samotnou trasu (vozidlo mění spoje)", async () => {
+  await req("/v2/public/vehiclepositions/service-0-1?scopes=shapes");
+  _internal.cache.forEach((v) => { v.exp = Date.now() - 1; }); // simulace uplynutí 5 s
+  await req("/v2/public/vehiclepositions/service-0-1?scopes=shapes");
+  assert.equal(calls.length, 2);
+});
