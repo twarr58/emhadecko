@@ -40,7 +40,8 @@ Golemio vyžaduje [API klíč zdarma](https://api.golemio.cz/api-keys) (`X-Acces
 Malá proxy na Cloudflare, která klíč drží na serveru. Ochrana:
 
 1. klíč je jen v secretu Workeru, nevrací se v odpovědích ani v chybách,
-2. jen `GET` a jen endpointy, které stránka používá, s validací parametrů,
+2. jen `GET` a jen endpointy, které stránka používá (polohy, detail vozidla, zastávky spoje,
+   odjezdy, přestupní tablo), s validací parametrů,
 3. odpovídá jen originům z `ALLOWED_ORIGINS` (`worker/wrangler.toml`),
 4. polohy stahuje z Golemia max. 1× za 5 s pro všechny návštěvníky a výřez mapy filtruje sám,
    takže zneužití nevyčerpá limit klíče,
