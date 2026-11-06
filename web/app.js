@@ -202,7 +202,7 @@
     v.pos = latlng;
     if (v.mode === "dot") v.dot.setLatLng(latlng);
     else if (v.mode === "label") v.label.setLatLng(latlng);
-    if (openId === v.id) card.setLatLng(latlng);
+    if (openId === v.id) selRing.setLatLng(latlng);
   }
 
   function removeVehicle(v) {
@@ -213,26 +213,58 @@
     details.delete(v.id);
   }
 
-  // ---------- sdílená karta vozidla (jeden popup pro všechna vozidla) ----------
-  const card = L.popup({ className: "veh-popup", maxWidth: 320, minWidth: 300, autoPanPadding: [20, 20] });
+  // ---------- karta vybraného vozidla (pevný panel, mapa se kvůli ní neposouvá) ----------
+  const $card = document.getElementById("card");
   let openId = null;
-  card.on("remove", () => { openId = null; });
+  // zvýraznění vybraného vozidla na mapě (SVG kvůli CSS animaci)
+  const selRing = L.circleMarker([0, 0], { radius: 15, weight: 3, fill: false, interactive: false, className: "sel-ring" });
 
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
     openId = id;
-    // ať karta neskončí pod ovládacím panelem vpravo nahoře
-    const panel = document.getElementById("panel").getBoundingClientRect();
-    const mapTop = map.getContainer().getBoundingClientRect().top;
-    card.options.autoPanPaddingTopLeft = L.point(20, Math.max(20, panel.bottom - mapTop + 12));
-    card.setLatLng(v.pos).setContent(renderCard(id)).openOn(map);
+    $card.hidden = false;
+    $card.scrollTop = 0;
+    $card.replaceChildren(renderCard(id));
+    selRing.setLatLng(v.pos).setStyle({ color: colorFor(v.props) }).addTo(map);
+    revealVehicle(v);
     loadDetail(id);
   }
 
-  function refreshCard(id) {
-    if (openId === id && map.hasLayer(card)) card.setContent(renderCard(id));
+  /** posune mapu (jen jednou, při otevření), pokud vozidlo není vidět nebo ho zakrývá karta */
+  function revealVehicle(v) {
+    const size = map.getSize();
+    const pt = map.latLngToContainerPoint(v.pos);
+    const mapBox = map.getContainer().getBoundingClientRect();
+    const c = $card.getBoundingClientRect();
+    const card = { left: c.left - mapBox.left, right: c.right - mapBox.left, top: c.top - mapBox.top, bottom: c.bottom - mapBox.top };
+    const pad = 40;
+    const covered = pt.x > card.left - pad && pt.x < card.right + pad && pt.y > card.top - pad && pt.y < card.bottom + pad;
+    const outside = pt.x < pad || pt.y < pad || pt.x > size.x - pad || pt.y > size.y - pad;
+    if (!covered && !outside) return;
+    // cíl: střed volné části mapy (vpravo od karty na desktopu, nad kartou na mobilu)
+    const bottomSheet = card.left <= 1 && card.right >= size.x - 1;
+    const target = bottomSheet
+      ? L.point(size.x / 2, Math.max(pad, card.top / 2))
+      : L.point(card.right + (size.x - card.right) / 2, size.y / 2);
+    map.panBy(pt.subtract(target), { animate: true });
   }
+
+  function closeCard() {
+    openId = null;
+    $card.hidden = true;
+    $card.replaceChildren();
+    selRing.remove();
+  }
+
+  function refreshCard(id) {
+    if (openId !== id) return;
+    const v = vehicles.get(id);
+    if (v) selRing.setStyle({ color: colorFor(v.props) });
+    $card.replaceChildren(renderCard(id));
+  }
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) closeCard(); });
 
   // ---------- karta vozidla (popup) ----------
   const STATES = {
@@ -365,6 +397,42 @@
     return h("ol", { class: "vc-stops" }, rows);
   }
 
+  // ---------- ilustrační foto modelu vozu z Wikipedie (Golemio obrázky nemá) ----------
+  /** @type {Map<string, {thumb?: string, url?: string, title?: string}|"pending">} */
+  const photos = new Map();
+  const norm = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  function vehiclePhoto(model) {
+    const cached = photos.get(model);
+    if (cached === "pending") return null;
+    if (cached) return cached;
+    photos.set(model, "pending");
+    (async () => {
+      const brand = norm(model.split(/[\s-]/)[0]);
+      for (const lang of ["cs", "en"]) {
+        try {
+          const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
+          Object.entries({
+            action: "query", format: "json", origin: "*", generator: "search", gsrsearch: model, gsrlimit: "5",
+            prop: "pageimages|info", piprop: "thumbnail", pithumbsize: "640", inprop: "url",
+          }).forEach(([k, v]) => url.searchParams.set(k, v));
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const pages = Object.values((await res.json())?.query?.pages || {}).sort((a, b) => a.index - b.index);
+          // jen článek o stejném výrobci, ať neukážeme náhodný obrázek
+          const hit = pages.find((pg) => pg.thumbnail?.source && norm(pg.title).includes(brand));
+          if (hit) {
+            photos.set(model, { thumb: hit.thumbnail.source, url: hit.fullurl, title: hit.title });
+            break;
+          }
+        } catch { /* zkusíme další jazyk */ }
+      }
+      if (photos.get(model) === "pending") photos.set(model, {});
+      if (openId) refreshCard(openId);
+    })();
+    return null;
+  }
+
   function renderCard(id) {
     const v = vehicles.get(id);
     const p = v ? v.props : {};
@@ -382,9 +450,12 @@
       h("div", { class: "vc-line" }, p.gtfs_route_short_name),
       h("div", { class: "vc-title" },
         h("div", { class: "vc-kind" }, TYPES[p.route_type] || p.route_type),
-        h("div", { class: "vc-dest" }, headsign ? ["→ ", headsign] : (d?.loading || !d ? h("span", { class: "sk sk-w60" }) : `linka ${p.gtfs_route_short_name}`)),
+        h("div", { class: "vc-dest", title: headsign || null }, headsign ? ["→ ", headsign] : (d?.loading || !d ? h("span", { class: "sk sk-w60" }) : `linka ${p.gtfs_route_short_name}`)),
       ),
     );
+    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    close.addEventListener("click", closeCard);
+    head.append(close);
 
     const age = info?.origin_timestamp ? ago(info.origin_timestamp) : null;
     const status = h("div", { class: "vc-status" },
@@ -413,10 +484,17 @@
     if (desc?.is_air_conditioned) feats.push(h("span", { class: "feat", title: "Klimatizace" }, "❄ klimatizace"));
     if (desc?.has_usb_chargers) feats.push(h("span", { class: "feat", title: "USB nabíječky" }, "⚡ USB"));
 
+    const model = desc?.vehicle_type || null;
+    const photo = model ? vehiclePhoto(model) : null;
     const veh = h("div", { class: "vc-veh" },
-      h("div", { class: "vc-veh-row" },
-        h("span", { class: "model" }, desc?.vehicle_type || "Vozidlo"),
-        h("span", { class: "meta" }, [regNo ? `ev. č. ${regNo}` : null, desc?.operator].filter(Boolean).join(" · "))),
+      photo?.thumb ? h("figure", { class: "vc-photo" },
+        h("img", { src: photo.thumb, alt: model, loading: "lazy" }),
+        h("figcaption", null, "Ilustrační foto · ",
+          h("a", { href: photo.url, target: "_blank", rel: "noopener" }, `Wikipedie: ${photo.title}`))) : null,
+      h("div", { class: "model" }, model || "Vozidlo"),
+      h("div", { class: "meta" },
+        regNo ? h("span", null, `ev. č. ${regNo}`) : null,
+        desc?.operator ? h("span", null, desc.operator) : null),
       feats.length ? h("div", { class: "feats" }, feats) : null,
     );
 
