@@ -79,6 +79,16 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-delay.early { background: var(--early-bg); color: var(--early); }
 .vc-delay .small { color: inherit; opacity: .8; }
 
+.vc-where {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border);
+}
+.vc-where .lbl { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.vc-where b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vc-where .pin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--c); box-sizing: border-box; }
+.vc-where.at { border-color: var(--c); background: color-mix(in srgb, var(--c) 10%, var(--bg)); }
+.vc-where.at .pin { background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 30%, transparent); }
+
 .vc-stops { list-style: none; margin: 8px 0 0; padding: 4px 14px 8px; position: relative; }
 .vc-stops::before { content: ""; position: absolute; left: 19px; top: 14px; bottom: 18px; width: 2px; background: var(--border); }
 .vc-stops li { position: relative; display: flex; align-items: center; gap: 10px; padding: 5px 0; }

@@ -222,6 +222,10 @@
     const v = vehicles.get(id);
     if (!v) return;
     openId = id;
+    // ať karta neskončí pod ovládacím panelem vpravo nahoře
+    const panel = document.getElementById("panel").getBoundingClientRect();
+    const mapTop = map.getContainer().getBoundingClientRect().top;
+    card.options.autoPanPaddingTopLeft = L.point(20, Math.max(20, panel.bottom - mapTop + 12));
     card.setLatLng(v.pos).setContent(renderCard(id)).openOn(map);
     loadDetail(id);
   }
@@ -301,15 +305,32 @@
     }
   }
 
-  function renderStops(info, stopTimes, state) {
+  /** seřazené zastávky spoje a index poslední projeté / aktuální zastávky */
+  function stopContext(info, stopTimes) {
     const feats = (stopTimes?.features || [])
       .map((f) => f.properties)
       .filter(Boolean)
       .sort((a, b) => a.stop_sequence - b.stop_sequence);
-    if (!feats.length) return null;
-
     const last = info?.last_stop_sequence ?? null;
     const idx = last == null ? -1 : feats.findIndex((s) => s.stop_sequence === last);
+    return { feats, idx };
+  }
+
+  /** kde vozidlo právě je: "Ve stanici X" / "Příští zastávka Y" */
+  function whereText(state, info, stopTimes) {
+    const { feats, idx } = stopContext(info, stopTimes);
+    if (!feats.length) return null;
+    const cur = feats[idx], next = feats[idx + 1];
+    if (state === "at_stop" && cur) return [null, cur.stop_name]; // "Ve stanici" už je ve stavu vedle
+    if ((state === "before_track" || state === "before_track_delayed") && feats[0]) return ["Odjíždí z", feats[0].stop_name];
+    if (next) return ["Příští zastávka", next.stop_name];
+    if (cur) return ["Poslední zastávka", cur.stop_name];
+    return null;
+  }
+
+  function renderStops(info, stopTimes, state) {
+    const { feats, idx } = stopContext(info, stopTimes);
+    if (!feats.length) return null;
     const atStop = state === "at_stop";
 
     // poslední projetá/aktuální zastávka, 3 příští a konečná
@@ -374,6 +395,13 @@
         h("div", null, STATES[state] || "—"),
         age ? h("div", { class: "small" }, `poloha ${age}`) : null),
     );
+    const where = data ? whereText(state, info, data.stop_times) : null;
+    if (where) {
+      status.append(h("div", { class: `vc-where ${state === "at_stop" ? "at" : ""}` },
+        h("span", { class: "pin" }),
+        where[0] ? h("span", { class: "lbl" }, where[0]) : null,
+        h("b", null, where[1])));
+    }
 
     let body;
     if (d?.error && !data) body = h("div", { class: "vc-msg" }, "Detail spoje se nepodařilo načíst.");
