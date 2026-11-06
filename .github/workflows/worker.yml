@@ -1,0 +1,44 @@
+name: worker
+
+on:
+  push:
+    branches: [main]
+    paths: [worker/**, .github/workflows/worker.yml]
+  pull_request:
+    paths: [worker/**, .github/workflows/worker.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Potřebné secrets repa: CLOUDFLARE_API_TOKEN (šablona "Edit Cloudflare Workers"),
+      # CLOUDFLARE_ACCOUNT_ID a GOLEMIO_API_KEY (ten se uloží jako secret Workeru).
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: "4"
+          secrets: |
+            GOLEMIO_API_KEY
+        env:
+          GOLEMIO_API_KEY: ${{ secrets.GOLEMIO_API_KEY }}
