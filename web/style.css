@@ -235,3 +235,14 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .tr-list .dh .sub { display: block; color: var(--major); }
 .tr-list .tag.ok { margin-left: 6px; font-size: 10px; padding: 0 5px; border-radius: 4px; background: var(--ok-bg); color: var(--ok); text-transform: uppercase; font-weight: 700; }
 .tr-list .dt b.tight { color: var(--major); }
+
+/* pozastaveno kvůli nečinnosti */
+#paused {
+  position: absolute; z-index: 1100; left: 50%; bottom: 28px; transform: translateX(-50%);
+  padding: 10px 16px; border: 0; border-radius: 999px; background: var(--fg); color: var(--bg);
+  font: 600 13px system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0,0,0,.3); cursor: pointer; max-width: calc(100vw - 32px);
+}
+
+/* vozidla přestupních spojů */
+.veh.xfer .badge { outline: 2px dashed var(--fg); outline-offset: 2px; }
+.tr-list .onmap { color: #22c55e; font-size: 11px; }
