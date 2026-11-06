@@ -15,8 +15,12 @@
     <div id="types"></div>
     <input id="lines" type="text" placeholder="Linky, např. 22, 9, A, 135" autocomplete="off">
     <div id="status">Načítám…</div>
+    <button id="alerts-btn" type="button" hidden></button>
     <button id="change-key" type="button" hidden>Změnit API klíč</button>
   </aside>
+
+  <aside id="card" class="sheet" hidden aria-live="polite"></aside>
+  <aside id="alerts" class="sheet" hidden></aside>
 
   <dialog id="key-dialog">
     <form method="dialog">

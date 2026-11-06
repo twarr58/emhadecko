@@ -107,7 +107,6 @@
   // HTML štítky s číslem linky jen při přiblížení a jen pro vozidla ve výřezu.
   const LABEL_ZOOM = 14; // od tohoto zoomu štítky s číslem linky
   const ANIM_ZOOM = 12; // pod tímto zoomem se pohyb neanimuje (není vidět), jen se přepíše poloha
-  const FRAME_MS = 33; // animace max ~30 fps
 
   const dotRenderer = L.canvas({ padding: 0.3, tolerance: 6 });
 
@@ -188,6 +187,7 @@
       v.label.setLatLng(v.pos).addTo(map);
     }
     v.mode = mode;
+    if (mode === "label") requestShape(v);
   }
 
   function syncAll() {
@@ -202,7 +202,7 @@
     v.pos = latlng;
     if (v.mode === "dot") v.dot.setLatLng(latlng);
     else if (v.mode === "label") v.label.setLatLng(latlng);
-    if (openId === v.id) card.setLatLng(latlng);
+    if (openId === v.id) selRing.setLatLng(latlng);
   }
 
   function removeVehicle(v) {
@@ -213,26 +213,63 @@
     details.delete(v.id);
   }
 
-  // ---------- sdílená karta vozidla (jeden popup pro všechna vozidla) ----------
-  const card = L.popup({ className: "veh-popup", maxWidth: 320, minWidth: 300, autoPanPadding: [20, 20] });
+  // ---------- karta vybraného vozidla (pevný panel, mapa se kvůli ní neposouvá) ----------
+  const $card = document.getElementById("card");
   let openId = null;
-  card.on("remove", () => { openId = null; });
+  // zvýraznění vybraného vozidla na mapě (SVG kvůli CSS animaci)
+  const selRing = L.circleMarker([0, 0], { radius: 15, weight: 3, fill: false, interactive: false, className: "sel-ring" });
 
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
+    if (openId !== id) { showAllStops = false; stopView = null; clearTrip(); }
+    if (!$alerts.hidden) closeAlerts();
     openId = id;
-    // ať karta neskončí pod ovládacím panelem vpravo nahoře
-    const panel = document.getElementById("panel").getBoundingClientRect();
-    const mapTop = map.getContainer().getBoundingClientRect().top;
-    card.options.autoPanPaddingTopLeft = L.point(20, Math.max(20, panel.bottom - mapTop + 12));
-    card.setLatLng(v.pos).setContent(renderCard(id)).openOn(map);
+    $card.hidden = false;
+    $card.scrollTop = 0;
+    $card.replaceChildren(renderCard(id));
+    selRing.setLatLng(v.pos).setStyle({ color: colorFor(v.props) }).addTo(map);
+    revealVehicle(v);
     loadDetail(id);
   }
 
-  function refreshCard(id) {
-    if (openId === id && map.hasLayer(card)) card.setContent(renderCard(id));
+  /** posune mapu (jen jednou, při otevření), pokud vozidlo není vidět nebo ho zakrývá karta */
+  function revealVehicle(v) {
+    const size = map.getSize();
+    const pt = map.latLngToContainerPoint(v.pos);
+    const mapBox = map.getContainer().getBoundingClientRect();
+    const c = $card.getBoundingClientRect();
+    const card = { left: c.left - mapBox.left, right: c.right - mapBox.left, top: c.top - mapBox.top, bottom: c.bottom - mapBox.top };
+    const pad = 40;
+    const covered = pt.x > card.left - pad && pt.x < card.right + pad && pt.y > card.top - pad && pt.y < card.bottom + pad;
+    const outside = pt.x < pad || pt.y < pad || pt.x > size.x - pad || pt.y > size.y - pad;
+    if (!covered && !outside) return;
+    // cíl: střed volné části mapy (vpravo od karty na desktopu, nad kartou na mobilu)
+    const bottomSheet = card.left <= 1 && card.right >= size.x - 1;
+    const target = bottomSheet
+      ? L.point(size.x / 2, Math.max(pad, card.top / 2))
+      : L.point(card.right + (size.x - card.right) / 2, size.y / 2);
+    map.panBy(pt.subtract(target), { animate: true });
   }
+
+  function closeCard() {
+    openId = null;
+    stopView = null;
+    clearTrip();
+    $card.hidden = true;
+    $card.replaceChildren();
+    selRing.remove();
+  }
+
+  function refreshCard(id) {
+    if (openId !== id) return;
+    const v = vehicles.get(id);
+    if (v) selRing.setStyle({ color: colorFor(v.props) });
+    $card.replaceChildren(renderCard(id));
+    drawTrip(id);
+  }
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) closeCard(); });
 
   // ---------- karta vozidla (popup) ----------
   const STATES = {
@@ -291,12 +328,18 @@
     details.set(id, d);
     try {
       const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(id)}`, CFG.apiBase);
-      for (const s of ["info", "stop_times", "vehicle_descriptor"]) url.searchParams.append("scopes", s);
+      const trip = v.props.gtfs_trip_id;
+      const needShape = !(shapes.get(trip) && typeof shapes.get(trip) === "object");
+      for (const s of ["info", "stop_times", "vehicle_descriptor", ...(needShape ? ["shapes"] : [])]) url.searchParams.append("scopes", s);
       const key = getKey();
       const res = await fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) }, cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       d.data = await res.json();
       d.error = null;
+      if (needShape && d.data?.shapes) {
+        const sh = buildShape(d.data.shapes.features);
+        if (sh) shapes.set(trip, sh);
+      }
     } catch (e) {
       d.error = e.message;
     } finally {
@@ -332,6 +375,7 @@
     const { feats, idx } = stopContext(info, stopTimes);
     if (!feats.length) return null;
     const atStop = state === "at_stop";
+    if (showAllStops) return renderAllStops(feats, idx, atStop);
 
     // poslední projetá/aktuální zastávka, 3 příští a konečná
     const pick = [];
@@ -354,15 +398,212 @@
       const rt = hhmm(passed ? s.realtime_departure_time : s.realtime_arrival_time);
       const late = rt && rt !== sched;
       const tag = { here: "zde", next: "příští", final: "konečná" }[p.role];
-      return h("li", { class: `stop ${p.role}` },
+      const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
       );
+      li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
+      return li;
     });
-    return h("ol", { class: "vc-stops" }, rows);
+    const all = h("button", { class: "vc-more", type: "button" }, `Celý jízdní řád spoje (${feats.length} zastávek)`);
+    all.addEventListener("click", () => { showAllStops = true; refreshCard(openId); });
+    return h("div", null, h("ol", { class: "vc-stops" }, rows), all);
+  }
+
+  function renderAllStops(feats, idx, atStop) {
+    const rows = feats.map((s, i) => {
+      const role = i < idx || (i === idx && !atStop) ? "passed"
+        : i === idx ? "here" : i === idx + 1 && !atStop ? "next" : i === feats.length - 1 ? "final" : "upcoming";
+      const passed = role === "passed";
+      const sched = hhmm(passed ? s.departure_time : s.arrival_time);
+      const rt = hhmm(passed ? s.realtime_departure_time : s.realtime_arrival_time);
+      const late = rt && rt !== sched;
+      const tag = { here: "zde", next: "příští", final: "konečná" }[role];
+      const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
+        h("span", { class: "dot" }),
+        h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
+      li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
+      return li;
+    });
+    const less = h("button", { class: "vc-more", type: "button" }, "Zobrazit méně");
+    less.addEventListener("click", () => { showAllStops = false; refreshCard(openId); });
+    return h("div", null, h("ol", { class: "vc-stops all" }, rows), less);
+  }
+
+  // ---------- ilustrační foto modelu vozu z Wikipedie (Golemio obrázky nemá) ----------
+  /** @type {Map<string, {thumb?: string, url?: string, title?: string}|"pending">} */
+  const photos = new Map();
+  const norm = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  function vehiclePhoto(model) {
+    const cached = photos.get(model);
+    if (cached === "pending") return null;
+    if (cached) return cached;
+    photos.set(model, "pending");
+    (async () => {
+      const brand = norm(model.split(/[\s-]/)[0]);
+      for (const lang of ["cs", "en"]) {
+        try {
+          const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
+          Object.entries({
+            action: "query", format: "json", origin: "*", generator: "search", gsrsearch: model, gsrlimit: "5",
+            prop: "pageimages|info", piprop: "thumbnail", pithumbsize: "640", inprop: "url",
+          }).forEach(([k, v]) => url.searchParams.set(k, v));
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const pages = Object.values((await res.json())?.query?.pages || {}).sort((a, b) => a.index - b.index);
+          // jen článek o stejném výrobci, ať neukážeme náhodný obrázek
+          const hit = pages.find((pg) => pg.thumbnail?.source && norm(pg.title).includes(brand));
+          if (hit) {
+            photos.set(model, { thumb: hit.thumbnail.source, url: hit.fullurl, title: hit.title });
+            break;
+          }
+        } catch { /* zkusíme další jazyk */ }
+      }
+      if (photos.get(model) === "pending") photos.set(model, {});
+      if (openId) refreshCard(openId);
+    })();
+    return null;
+  }
+
+  // ---------- vybraný spoj na mapě: trasa + zastávky, odjezdy ze zastávky ----------
+  map.createPane("trip").style.zIndex = 390; // pod tečkami vozidel
+  map.createPane("tripStops").style.zIndex = 450; // nad tečkami, ať jdou zastávky rozkliknout
+  const tripLayer = L.layerGroup().addTo(map);
+  let tripKey = "";
+  let showAllStops = false;
+  /** @type {null | {seq: number, name: string, data: object[]|null, error: string|null, loading: boolean}} */
+  let stopView = null;
+  /** trip → Map(stop_sequence → stop_id) */
+  const tripStops = new Map();
+
+  function apiFetch(path, params) {
+    const url = new URL(path, CFG.apiBase);
+    for (const [k, v] of params || []) url.searchParams.append(k, v);
+    const key = getKey();
+    return fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+  }
+
+  async function loadTripStops(trip) {
+    if (!trip || tripStops.has(trip)) return tripStops.get(trip);
+    const p = apiFetch(`/v2/gtfs/trips/${encodeURIComponent(trip)}`, [["includeStopTimes", "true"]])
+      .then((d) => new Map((d?.stop_times || []).map((st) => [Number(st.stop_sequence), st.stop_id])))
+      .catch(() => { tripStops.delete(trip); return null; });
+    tripStops.set(trip, p);
+    return p;
+  }
+
+  function stopFeatures(id) {
+    const st = details.get(id)?.data?.stop_times?.features || [];
+    return st.filter((f) => f.properties && f.geometry?.coordinates)
+      .sort((a, b) => a.properties.stop_sequence - b.properties.stop_sequence);
+  }
+
+  function drawTrip(id) {
+    const v = vehicles.get(id);
+    const d = details.get(id)?.data;
+    if (!v || !d) return;
+    const trip = v.props.gtfs_trip_id;
+    const info = d.info || d;
+    const sh = shapes.get(trip);
+    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${typeof sh === "object"}`;
+    if (key === tripKey) return;
+    tripKey = key;
+    tripLayer.clearLayers();
+    const color = colorFor(v.props);
+    if (sh && typeof sh === "object") {
+      L.polyline(sh.coords.map(([lng, lat]) => [lat, lng]), { pane: "trip", color, weight: 6, opacity: 0.55, interactive: false }).addTo(tripLayer);
+    }
+    const last = info.last_stop_sequence ?? -1;
+    for (const f of stopFeatures(id)) {
+      const s = f.properties;
+      const [lng, lat] = f.geometry.coordinates;
+      const passed = s.stop_sequence < last || (s.stop_sequence === last && v.props.state_position !== "at_stop");
+      const sel = stopView?.seq === s.stop_sequence;
+      L.circleMarker([lat, lng], {
+        pane: "tripStops", radius: sel ? 8 : 5, weight: sel ? 4 : 2.5, color: passed ? "#9ca3af" : color,
+        fillColor: "#fff", fillOpacity: 1,
+      })
+        .bindTooltip(`${s.stop_name} · ${hhmm(s.realtime_arrival_time || s.arrival_time)}`, { direction: "top", offset: [0, -6] })
+        .on("click", () => openStop(s.stop_sequence, s.stop_name))
+        .addTo(tripLayer);
+    }
+  }
+
+  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; }
+
+  function openStop(seq, name) {
+    stopView = { seq, name, data: null, error: null, loading: false };
+    $card.scrollTop = 0;
+    refreshCard(openId);
+    loadDepartures();
+  }
+
+  function closeStop() {
+    stopView = null;
+    refreshCard(openId);
+  }
+
+  async function loadDepartures() {
+    const sv = stopView;
+    const v = vehicles.get(openId);
+    if (!sv || !v || sv.loading) return;
+    sv.loading = true;
+    try {
+      const ids = await loadTripStops(v.props.gtfs_trip_id);
+      const stopId = ids?.get(sv.seq);
+      if (!stopId) throw new Error("Zastávku se nepodařilo dohledat.");
+      const groups = await apiFetch("/v2/public/departureboards", [
+        ["stopIds[]", JSON.stringify({ 0: [stopId] })], ["limit", "12"], ["minutesAfter", "90"],
+      ]);
+      sv.data = (groups || []).flat();
+      sv.error = null;
+    } catch (e) {
+      sv.error = e.message;
+    } finally {
+      sv.loading = false;
+      if (stopView === sv) refreshCard(openId);
+    }
+  }
+
+  function renderDepartures(p) {
+    const sv = stopView;
+    const back = h("button", { class: "vc-back", type: "button" }, `← spoj ${p.gtfs_route_short_name}`);
+    back.addEventListener("click", closeStop);
+    const head = h("div", { class: "vc-sub" }, back,
+      h("div", { class: "vc-subtitle" }, h("span", { class: "lbl" }, "Odjezdy ze zastávky"), h("b", null, sv.name)));
+
+    let list;
+    if (sv.error && !sv.data) list = h("div", { class: "vc-msg" }, `Odjezdy se nepodařilo načíst. ${sv.error}`);
+    else if (!sv.data) list = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
+    else if (!sv.data.length) list = h("div", { class: "vc-msg" }, "V příštích 90 minutách odsud nic neodjíždí.");
+    else {
+      list = h("ul", { class: "vc-deps" }, sv.data.map((dep) => {
+        const route = dep.route || {}, trip = dep.trip || {}, de = dep.departure || {};
+        const c = colorFor({ route_type: route.type, gtfs_route_short_name: route.short_name });
+        const delay = de.delay_seconds ?? null;
+        const mins = de.minutes;
+        const when = mins == null ? "" : mins <= 0 ? "teď" : mins < 60 ? `${mins} min` : hhmm(new Date(de.timestamp_predicted).toTimeString());
+        const sched = de.timestamp_scheduled ? new Date(de.timestamp_scheduled).toTimeString().slice(0, 5) : "";
+        const veh = dep.vehicle?.id && vehicles.get(dep.vehicle.id);
+        const li = h("li", { class: `${trip.is_canceled ? "canceled" : ""} ${veh ? "has-veh" : ""}`, title: veh ? "Ukázat vozidlo" : null },
+          h("span", { class: "dl", style: `background:${c}` }, route.short_name),
+          h("span", { class: "dh" }, trip.headsign, dep.vehicle?.is_wheelchair_accessible ? h("span", { class: "acc", title: "bezbariérové" }, " ♿") : null,
+            trip.is_canceled ? h("span", { class: "tag" }, "odřeknuto") : null),
+          h("span", { class: "dt" },
+            h("b", null, when),
+            h("small", { class: delay >= 60 ? "late" : null }, delay >= 60 ? `${sched} +${Math.round(delay / 60)}` : sched)),
+        );
+        if (veh) li.addEventListener("click", () => { stopView = null; openCard(veh.id); });
+        return li;
+      }));
+    }
+    return h("div", { class: "vc-depview" }, head, list);
   }
 
   function renderCard(id) {
@@ -382,9 +623,13 @@
       h("div", { class: "vc-line" }, p.gtfs_route_short_name),
       h("div", { class: "vc-title" },
         h("div", { class: "vc-kind" }, TYPES[p.route_type] || p.route_type),
-        h("div", { class: "vc-dest" }, headsign ? ["→ ", headsign] : (d?.loading || !d ? h("span", { class: "sk sk-w60" }) : `linka ${p.gtfs_route_short_name}`)),
+        h("div", { class: "vc-dest", title: headsign || null }, headsign ? ["→ ", headsign] : (d?.loading || !d ? h("span", { class: "sk sk-w60" }) : `linka ${p.gtfs_route_short_name}`)),
       ),
     );
+    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    close.addEventListener("click", closeCard);
+    head.append(close);
+    if (stopView) return h("div", { class: "vc", style: `--c:${color}` }, head, renderDepartures(p));
 
     const age = info?.origin_timestamp ? ago(info.origin_timestamp) : null;
     const status = h("div", { class: "vc-status" },
@@ -403,6 +648,9 @@
         h("b", null, where[1])));
     }
 
+    const lineAlerts = renderLineAlerts(p.gtfs_route_short_name);
+    if (lineAlerts) status.append(lineAlerts);
+
     let body;
     if (d?.error && !data) body = h("div", { class: "vc-msg" }, "Detail spoje se nepodařilo načíst.");
     else if (!data) body = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
@@ -413,15 +661,100 @@
     if (desc?.is_air_conditioned) feats.push(h("span", { class: "feat", title: "Klimatizace" }, "❄ klimatizace"));
     if (desc?.has_usb_chargers) feats.push(h("span", { class: "feat", title: "USB nabíječky" }, "⚡ USB"));
 
+    const model = desc?.vehicle_type || null;
+    const photo = model ? vehiclePhoto(model) : null;
     const veh = h("div", { class: "vc-veh" },
-      h("div", { class: "vc-veh-row" },
-        h("span", { class: "model" }, desc?.vehicle_type || "Vozidlo"),
-        h("span", { class: "meta" }, [regNo ? `ev. č. ${regNo}` : null, desc?.operator].filter(Boolean).join(" · "))),
+      photo?.thumb ? h("figure", { class: "vc-photo" },
+        h("img", { src: photo.thumb, alt: model, loading: "lazy" }),
+        h("figcaption", null, "Ilustrační foto · ",
+          h("a", { href: photo.url, target: "_blank", rel: "noopener" }, `Wikipedie: ${photo.title}`))) : null,
+      h("div", { class: "model" }, model || "Vozidlo"),
+      h("div", { class: "meta" },
+        regNo ? h("span", null, `ev. č. ${regNo}`) : null,
+        desc?.operator ? h("span", null, desc.operator) : null),
       feats.length ? h("div", { class: "feats" }, feats) : null,
     );
 
     return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, veh,
       h("footer", { class: "vc-foot" }, `spoj ${p.gtfs_trip_id || "?"}`));
+  }
+
+  // ---------- trasy spojů (aby vozidla jezdila po silnici/kolejích, ne vzduchem) ----------
+  // Trasa se stahuje jen pro vozidla viditelná při přiblížení (štítky), cachuje se podle spoje
+  // a stahování je omezené kvůli limitu API klíče.
+  const SHAPE_CONCURRENCY = 2;
+  const SHAPE_BUDGET_PER_POLL = 8;
+  const SHAPE_MAX_OFFSET = 60; // m — dál od trasy už polohu na trasu nepřichytáváme
+  /** @type {Map<string, object|"pending"|"none">} */
+  const shapes = new Map();
+  const shapeQueue = [];
+  let shapeInflight = 0;
+  let shapeBudget = SHAPE_BUDGET_PER_POLL;
+
+  const M_PER_DEG_LAT = 110540;
+  function toXY(lat, lng, kx) { return [lng * kx, lat * M_PER_DEG_LAT]; }
+
+  function buildShape(features) {
+    const coords = (features || []).map((f) => f.geometry?.coordinates).filter((c) => Array.isArray(c) && c.length >= 2);
+    if (coords.length < 2) return null;
+    const kx = 111320 * Math.cos((coords[0][1] * Math.PI) / 180);
+    const xy = coords.map(([lng, lat]) => toXY(lat, lng, kx));
+    const cum = [0];
+    for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]));
+    return { coords, xy, cum, kx };
+  }
+
+  /** nejbližší bod trasy: vzdálenost od začátku trasy (d) a od trasy (off), v metrech */
+  function project(sh, latlng) {
+    const [px, py] = toXY(latlng.lat, latlng.lng, sh.kx);
+    let best = { d: 0, off: Infinity };
+    for (let i = 1; i < sh.xy.length; i++) {
+      const [ax, ay] = sh.xy[i - 1], [bx, by] = sh.xy[i];
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+      const off = Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+      if (off < best.off) best = { d: sh.cum[i - 1] + (sh.cum[i] - sh.cum[i - 1]) * t, off };
+    }
+    return best;
+  }
+
+  function pointAt(sh, d) {
+    const c = sh.cum;
+    let lo = 0, hi = c.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (c[mid] <= d) lo = mid; else hi = mid; }
+    const seg = c[hi] - c[lo];
+    const t = seg ? Math.max(0, Math.min(1, (d - c[lo]) / seg)) : 0;
+    const [aLng, aLat] = sh.coords[lo], [bLng, bLat] = sh.coords[hi];
+    return L.latLng(aLat + (bLat - aLat) * t, aLng + (bLng - aLng) * t);
+  }
+
+  function requestShape(v) {
+    const trip = v.props.gtfs_trip_id;
+    if (!trip || shapes.has(trip)) return;
+    if (shapes.size > 600) for (const [k, s] of shapes) if (s !== "pending") shapes.delete(k);
+    shapes.set(trip, "pending");
+    shapeQueue.push({ trip, vehicleId: v.id });
+    pumpShapes();
+  }
+
+  function pumpShapes() {
+    while (shapeInflight < SHAPE_CONCURRENCY && shapeBudget > 0 && shapeQueue.length) {
+      const { trip, vehicleId } = shapeQueue.shift();
+      const v = vehicles.get(vehicleId);
+      // vozidlo mezitím zmizelo z výřezu → trasu teď nepotřebujeme
+      if (!v || v.mode !== "label") { shapes.delete(trip); continue; }
+      shapeInflight++;
+      shapeBudget--;
+      const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, CFG.apiBase);
+      url.searchParams.append("scopes", "shapes");
+      const key = getKey();
+      fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((data) => shapes.set(trip, buildShape(data?.shapes?.features) || "none"))
+        .catch((status) => { if (status === 429) shapes.delete(trip); else shapes.set(trip, "none"); })
+        .finally(() => { shapeInflight--; pumpShapes(); });
+    }
   }
 
   function upsert(feature, now) {
@@ -436,7 +769,8 @@
     if (!v) {
       const dot = L.circleMarker(latlng, { renderer: dotRenderer, radius: dotRadius(), fillOpacity: 1, ...dotStyle(p) })
         .on("click", () => openCard(id));
-      v = { id, props: p, pos: latlng, from: latlng, to: latlng, t0: now, dur: 0, dot, label: null, iconKey: "", mode: null };
+      v = { id, props: p, pos: latlng, raw: latlng, from: latlng, to: latlng, path: null, t0: now, dur: 0,
+        lastChange: 0, interval: 0, dot, label: null, iconKey: "", mode: null };
       vehicles.set(id, v);
       sync(v);
       return id;
@@ -450,51 +784,70 @@
       if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
     }
 
-    // animuj jen to, co je vidět; ostatní rovnou přesuň
-    const animate = map.getZoom() >= ANIM_ZOOM && v.mode !== null &&
-      (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
-    if (animate && !v.pos.equals(latlng)) {
-      v.from = v.pos;
-      v.to = latlng;
-      v.t0 = now;
-      v.dur = POLL_MS;
-      moving.add(id);
-    } else {
-      moving.delete(id);
-      setPos(v, latlng);
+    // Poloha se nezměnila = vozidlo zatím neposlalo novou polohu (nebo stojí). Rozjetou animaci necháme doběhnout.
+    const changed = !v.raw.equals(latlng);
+    if (changed) {
+      // jak často tohle vozidlo reálně hlásí polohu (klouzavý průměr, dlouhé stání nepočítáme)
+      const gap = v.lastChange ? now - v.lastChange : 0;
+      // (kratší mezery než interval stahování jsou jen extra načtení po posunu mapy → ignorovat)
+      if (gap >= POLL_MS * 0.8 && gap < 45000) v.interval = v.interval ? 0.5 * v.interval + 0.5 * gap : gap;
+      v.lastChange = now;
+      v.raw = latlng;
+
+      const animate = map.getZoom() >= ANIM_ZOOM && v.mode !== null &&
+        (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
+      if (animate) {
+        v.from = v.pos;
+        v.to = latlng;
+        v.t0 = now;
+        // animace trvá tak dlouho, jak často vozidlo hlásí polohu → plynule navazuje na další hlášení
+        // (+15 %, aby další poloha přišla ještě během pohybu a vozidlo se nezastavovalo)
+        v.dur = Math.max(POLL_MS, Math.min(30000, (v.interval || POLL_MS * 1.5) * 1.15));
+        v.path = null;
+        const sh = shapes.get(p.gtfs_trip_id);
+        if (sh && typeof sh === "object") {
+          const a = project(sh, v.from), b = project(sh, latlng);
+          if (a.off < SHAPE_MAX_OFFSET && b.off < SHAPE_MAX_OFFSET && b.d >= a.d - 5 && b.d - a.d < SNAP_METERS) {
+            v.path = { sh, d0: a.d, d1: b.d };
+          }
+        }
+        moving.add(id);
+      } else {
+        moving.delete(id);
+        v.path = null;
+        setPos(v, latlng);
+      }
     }
     sync(v);
 
-    if (openId === id) { refreshCard(id); loadDetail(id); }
+    if (openId === id) { refreshCard(id); loadDetail(id); if (stopView) loadDepartures(); }
     return id;
   }
 
-  // plynulý přesun mezi dvěma polohami (lineární interpolace), smyčka běží jen když se něco hýbe
+  // plynulý pohyb: po trase spoje, pokud ji známe, jinak přímo; smyčka běží jen když se něco hýbe
   let rafId = 0;
-  let lastFrame = 0;
   function startAnimation() {
     if (!rafId && moving.size) rafId = requestAnimationFrame(animate);
   }
+  function positionAt(v, t) {
+    if (v.path) return pointAt(v.path.sh, v.path.d0 + (v.path.d1 - v.path.d0) * t);
+    if (t >= 1) return v.to;
+    return L.latLng(v.from.lat + (v.to.lat - v.from.lat) * t, v.from.lng + (v.to.lng - v.from.lng) * t);
+  }
   function animate(now) {
     rafId = 0;
-    if (now - lastFrame >= FRAME_MS) {
-      lastFrame = now;
-      for (const id of moving) {
-        const v = vehicles.get(id);
-        if (!v) { moving.delete(id); continue; }
-        const t = Math.min(1, (now - v.t0) / v.dur);
-        setPos(v, t >= 1 ? v.to : L.latLng(
-          v.from.lat + (v.to.lat - v.from.lat) * t,
-          v.from.lng + (v.to.lng - v.from.lng) * t,
-        ));
-        if (t >= 1) moving.delete(id);
-      }
+    for (const id of moving) {
+      const v = vehicles.get(id);
+      if (!v) { moving.delete(id); continue; }
+      const t = Math.min(1, (now - v.t0) / v.dur);
+      setPos(v, positionAt(v, t));
+      if (t >= 1) moving.delete(id);
     }
     startAnimation();
   }
 
   function finishAnimations() {
-    for (const id of moving) { const v = vehicles.get(id); if (v) setPos(v, v.to); }
+    for (const id of moving) { const v = vehicles.get(id); if (v) setPos(v, positionAt(v, 1)); }
     moving.clear();
   }
 
@@ -502,6 +855,111 @@
     let shown = 0;
     for (const v of vehicles.values()) if (v.mode) shown++;
     setStatus(`${shown} / ${vehicles.size} vozidel${extra}`);
+  }
+
+  // ---------- výluky a mimořádnosti (RSS pid.cz → alerts.json, generuje workflow) ----------
+  const $alerts = document.getElementById("alerts");
+  const $alertsBtn = document.getElementById("alerts-btn");
+  let alerts = [];
+  let alertsGenerated = null;
+
+  const isActive = (a, now = Date.now()) => (!a.from || a.from * 1000 <= now) && (!a.to || a.to * 1000 >= now);
+  const lineKey = (l) => String(l).trim().toUpperCase();
+
+  function alertsForLine(line) {
+    const k = lineKey(line);
+    return alerts.filter((a) => isActive(a) && a.lines.some((l) => lineKey(l) === k))
+      .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "mimoradnost" ? -1 : 1));
+  }
+
+  async function loadAlerts() {
+    try {
+      const res = await fetch("alerts.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      alerts = Array.isArray(data.items) ? data.items : [];
+      alertsGenerated = data.generated ? new Date(data.generated * 1000) : null;
+    } catch { return; }
+    const active = alerts.filter((a) => isActive(a));
+    const incidents = active.filter((a) => a.kind === "mimoradnost").length;
+    $alertsBtn.hidden = !alerts.length;
+    $alertsBtn.classList.toggle("has-incident", incidents > 0);
+    const plural = (n, one, few, many) => `${n} ${n === 1 ? one : n > 1 && n < 5 ? few : many}`;
+    const closures = active.length - incidents;
+    $alertsBtn.replaceChildren(
+      h("span", { class: "t" }, h("span", { class: "ic" }, "⚠"), " Omezení provozu"),
+      h("span", { class: "pills" },
+        incidents ? h("span", { class: "inc" }, plural(incidents, "mimořádnost", "mimořádnosti", "mimořádností")) : null,
+        h("span", { class: "vy" }, plural(closures, "výluka", "výluky", "výluk"))));
+    if (!$alerts.hidden) renderAlerts();
+    if (openId) refreshCard(openId);
+  }
+
+  function alertItem(a, compact = false) {
+    return h("li", { class: `al ${a.kind}` },
+      h("div", { class: "al-top" },
+        h("span", { class: "al-kind" }, a.kind === "mimoradnost" ? "Mimořádnost" : "Výluka"),
+        h("span", { class: "al-when" }, a.when)),
+      h("a", { class: "al-title", href: a.link, target: "_blank", rel: "noopener" }, a.title, " ↗"),
+      !compact && a.lines.length ? h("div", { class: "al-lines" }, a.lines.slice(0, 24).map((l) => h("span", null, l)),
+        a.lines.length > 24 ? h("span", null, `+${a.lines.length - 24}`) : null) : null,
+      !compact && a.summary ? h("p", { class: "al-sum" }, a.summary) : null);
+  }
+
+  function renderAlerts() {
+    const now = Date.now();
+    const match = (a) => !lineFilter || a.lines.some((l) => lineFilter.has(lineKey(l)));
+    const shown = alerts.filter(match);
+    const incidents = shown.filter((a) => a.kind === "mimoradnost" && isActive(a, now));
+    const current = shown.filter((a) => a.kind === "vyluka" && isActive(a, now));
+    const upcoming = shown.filter((a) => a.from && a.from * 1000 > now).sort((a, b) => a.from - b.from);
+
+    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    close.addEventListener("click", closeAlerts);
+    const section = (title, items, cls = "") => items.length
+      ? [h("h3", { class: `al-h ${cls}` }, `${title} (${items.length})`), h("ul", { class: "al-list" }, items.map((a) => alertItem(a)))]
+      : [];
+
+    $alerts.replaceChildren(h("div", { class: "vc", style: "--c:#b45309" },
+      h("header", { class: "vc-head" },
+        h("div", { class: "vc-line" }, "⚠"),
+        h("div", { class: "vc-title" },
+          h("div", { class: "vc-kind" }, "PID"),
+          h("div", { class: "vc-dest" }, "Výluky a mimořádnosti")),
+        close),
+      h("div", { class: "al-note" },
+        lineFilter ? `Jen pro linky: ${[...lineFilter].join(", ")} (podle filtru linek)` : "Tip: filtrem linek v panelu zúžíš výpis na své linky.",
+        alertsGenerated ? h("span", null, ` · aktualizováno ${alertsGenerated.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}`) : null),
+      ...section("Mimořádnosti", incidents, "inc"),
+      ...section("Aktuální výluky", current),
+      ...section("Připravované (7 dní)", upcoming, "up"),
+      !incidents.length && !current.length && !upcoming.length ? h("div", { class: "vc-msg" }, "Nic nenalezeno.") : null,
+      h("footer", { class: "vc-foot" }, "Zdroj: RSS pid.cz")));
+  }
+
+  function openAlerts() {
+    if (openId) closeCard();
+    $alerts.hidden = false;
+    $alerts.scrollTop = 0;
+    renderAlerts();
+  }
+  function closeAlerts() { $alerts.hidden = true; $alerts.replaceChildren(); }
+
+  $alertsBtn.addEventListener("click", () => ($alerts.hidden ? openAlerts() : closeAlerts()));
+  $lines.addEventListener("input", () => { if (!$alerts.hidden) renderAlerts(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$alerts.hidden) closeAlerts(); });
+  loadAlerts();
+  setInterval(loadAlerts, 5 * 60 * 1000);
+
+  /** upozornění v kartě vozidla */
+  function renderLineAlerts(line) {
+    const list = alertsForLine(line);
+    if (!list.length) return null;
+    const inc = list.some((a) => a.kind === "mimoradnost");
+    return h("details", { class: `vc-alerts ${inc ? "inc" : ""}` },
+      h("summary", null, h("span", { class: "ic" }, "⚠"),
+        ` Na lince ${line} ${list.length === 1 ? "platí 1 omezení" : `platí ${list.length} ${list.length < 5 ? "omezení" : "omezení"}`}`),
+      h("ul", { class: "al-list" }, list.map((a) => alertItem(a, true))));
   }
 
   // ---------- fetch ----------
@@ -549,6 +1007,8 @@
       for (const [id, v] of vehicles) {
         if (!seen.has(id) && openId !== id) removeVehicle(v);
       }
+      shapeBudget = SHAPE_BUDGET_PER_POLL;
+      pumpShapes();
       lastOk = new Date();
       updateCount();
       startAnimation();
