@@ -222,6 +222,7 @@
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
+    if (openId !== id) { showAllStops = false; stopView = null; clearTrip(); }
     openId = id;
     $card.hidden = false;
     $card.scrollTop = 0;
@@ -252,6 +253,8 @@
 
   function closeCard() {
     openId = null;
+    stopView = null;
+    clearTrip();
     $card.hidden = true;
     $card.replaceChildren();
     selRing.remove();
@@ -262,6 +265,7 @@
     const v = vehicles.get(id);
     if (v) selRing.setStyle({ color: colorFor(v.props) });
     $card.replaceChildren(renderCard(id));
+    drawTrip(id);
   }
 
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) closeCard(); });
@@ -323,12 +327,18 @@
     details.set(id, d);
     try {
       const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(id)}`, CFG.apiBase);
-      for (const s of ["info", "stop_times", "vehicle_descriptor"]) url.searchParams.append("scopes", s);
+      const trip = v.props.gtfs_trip_id;
+      const needShape = !(shapes.get(trip) && typeof shapes.get(trip) === "object");
+      for (const s of ["info", "stop_times", "vehicle_descriptor", ...(needShape ? ["shapes"] : [])]) url.searchParams.append("scopes", s);
       const key = getKey();
       const res = await fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) }, cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       d.data = await res.json();
       d.error = null;
+      if (needShape && d.data?.shapes) {
+        const sh = buildShape(d.data.shapes.features);
+        if (sh) shapes.set(trip, sh);
+      }
     } catch (e) {
       d.error = e.message;
     } finally {
@@ -364,6 +374,7 @@
     const { feats, idx } = stopContext(info, stopTimes);
     if (!feats.length) return null;
     const atStop = state === "at_stop";
+    if (showAllStops) return renderAllStops(feats, idx, atStop);
 
     // poslední projetá/aktuální zastávka, 3 příští a konečná
     const pick = [];
@@ -386,15 +397,40 @@
       const rt = hhmm(passed ? s.realtime_departure_time : s.realtime_arrival_time);
       const late = rt && rt !== sched;
       const tag = { here: "zde", next: "příští", final: "konečná" }[p.role];
-      return h("li", { class: `stop ${p.role}` },
+      const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
       );
+      li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
+      return li;
     });
-    return h("ol", { class: "vc-stops" }, rows);
+    const all = h("button", { class: "vc-more", type: "button" }, `Celý jízdní řád spoje (${feats.length} zastávek)`);
+    all.addEventListener("click", () => { showAllStops = true; refreshCard(openId); });
+    return h("div", null, h("ol", { class: "vc-stops" }, rows), all);
+  }
+
+  function renderAllStops(feats, idx, atStop) {
+    const rows = feats.map((s, i) => {
+      const role = i < idx || (i === idx && !atStop) ? "passed"
+        : i === idx ? "here" : i === idx + 1 && !atStop ? "next" : i === feats.length - 1 ? "final" : "upcoming";
+      const passed = role === "passed";
+      const sched = hhmm(passed ? s.departure_time : s.arrival_time);
+      const rt = hhmm(passed ? s.realtime_departure_time : s.realtime_arrival_time);
+      const late = rt && rt !== sched;
+      const tag = { here: "zde", next: "příští", final: "konečná" }[role];
+      const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
+        h("span", { class: "dot" }),
+        h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
+      li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
+      return li;
+    });
+    const less = h("button", { class: "vc-more", type: "button" }, "Zobrazit méně");
+    less.addEventListener("click", () => { showAllStops = false; refreshCard(openId); });
+    return h("div", null, h("ol", { class: "vc-stops all" }, rows), less);
   }
 
   // ---------- ilustrační foto modelu vozu z Wikipedie (Golemio obrázky nemá) ----------
@@ -433,6 +469,142 @@
     return null;
   }
 
+  // ---------- vybraný spoj na mapě: trasa + zastávky, odjezdy ze zastávky ----------
+  map.createPane("trip").style.zIndex = 390; // pod tečkami vozidel
+  map.createPane("tripStops").style.zIndex = 450; // nad tečkami, ať jdou zastávky rozkliknout
+  const tripLayer = L.layerGroup().addTo(map);
+  let tripKey = "";
+  let showAllStops = false;
+  /** @type {null | {seq: number, name: string, data: object[]|null, error: string|null, loading: boolean}} */
+  let stopView = null;
+  /** trip → Map(stop_sequence → stop_id) */
+  const tripStops = new Map();
+
+  function apiFetch(path, params) {
+    const url = new URL(path, CFG.apiBase);
+    for (const [k, v] of params || []) url.searchParams.append(k, v);
+    const key = getKey();
+    return fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+  }
+
+  async function loadTripStops(trip) {
+    if (!trip || tripStops.has(trip)) return tripStops.get(trip);
+    const p = apiFetch(`/v2/gtfs/trips/${encodeURIComponent(trip)}`, [["includeStopTimes", "true"]])
+      .then((d) => new Map((d?.stop_times || []).map((st) => [Number(st.stop_sequence), st.stop_id])))
+      .catch(() => { tripStops.delete(trip); return null; });
+    tripStops.set(trip, p);
+    return p;
+  }
+
+  function stopFeatures(id) {
+    const st = details.get(id)?.data?.stop_times?.features || [];
+    return st.filter((f) => f.properties && f.geometry?.coordinates)
+      .sort((a, b) => a.properties.stop_sequence - b.properties.stop_sequence);
+  }
+
+  function drawTrip(id) {
+    const v = vehicles.get(id);
+    const d = details.get(id)?.data;
+    if (!v || !d) return;
+    const trip = v.props.gtfs_trip_id;
+    const info = d.info || d;
+    const sh = shapes.get(trip);
+    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${typeof sh === "object"}`;
+    if (key === tripKey) return;
+    tripKey = key;
+    tripLayer.clearLayers();
+    const color = colorFor(v.props);
+    if (sh && typeof sh === "object") {
+      L.polyline(sh.coords.map(([lng, lat]) => [lat, lng]), { pane: "trip", color, weight: 6, opacity: 0.55, interactive: false }).addTo(tripLayer);
+    }
+    const last = info.last_stop_sequence ?? -1;
+    for (const f of stopFeatures(id)) {
+      const s = f.properties;
+      const [lng, lat] = f.geometry.coordinates;
+      const passed = s.stop_sequence < last || (s.stop_sequence === last && v.props.state_position !== "at_stop");
+      const sel = stopView?.seq === s.stop_sequence;
+      L.circleMarker([lat, lng], {
+        pane: "tripStops", radius: sel ? 8 : 5, weight: sel ? 4 : 2.5, color: passed ? "#9ca3af" : color,
+        fillColor: "#fff", fillOpacity: 1,
+      })
+        .bindTooltip(`${s.stop_name} · ${hhmm(s.realtime_arrival_time || s.arrival_time)}`, { direction: "top", offset: [0, -6] })
+        .on("click", () => openStop(s.stop_sequence, s.stop_name))
+        .addTo(tripLayer);
+    }
+  }
+
+  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; }
+
+  function openStop(seq, name) {
+    stopView = { seq, name, data: null, error: null, loading: false };
+    $card.scrollTop = 0;
+    refreshCard(openId);
+    loadDepartures();
+  }
+
+  function closeStop() {
+    stopView = null;
+    refreshCard(openId);
+  }
+
+  async function loadDepartures() {
+    const sv = stopView;
+    const v = vehicles.get(openId);
+    if (!sv || !v || sv.loading) return;
+    sv.loading = true;
+    try {
+      const ids = await loadTripStops(v.props.gtfs_trip_id);
+      const stopId = ids?.get(sv.seq);
+      if (!stopId) throw new Error("Zastávku se nepodařilo dohledat.");
+      const groups = await apiFetch("/v2/public/departureboards", [
+        ["stopIds[]", JSON.stringify({ 0: [stopId] })], ["limit", "12"], ["minutesAfter", "90"],
+      ]);
+      sv.data = (groups || []).flat();
+      sv.error = null;
+    } catch (e) {
+      sv.error = e.message;
+    } finally {
+      sv.loading = false;
+      if (stopView === sv) refreshCard(openId);
+    }
+  }
+
+  function renderDepartures(p) {
+    const sv = stopView;
+    const back = h("button", { class: "vc-back", type: "button" }, `← spoj ${p.gtfs_route_short_name}`);
+    back.addEventListener("click", closeStop);
+    const head = h("div", { class: "vc-sub" }, back,
+      h("div", { class: "vc-subtitle" }, h("span", { class: "lbl" }, "Odjezdy ze zastávky"), h("b", null, sv.name)));
+
+    let list;
+    if (sv.error && !sv.data) list = h("div", { class: "vc-msg" }, `Odjezdy se nepodařilo načíst. ${sv.error}`);
+    else if (!sv.data) list = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
+    else if (!sv.data.length) list = h("div", { class: "vc-msg" }, "V příštích 90 minutách odsud nic neodjíždí.");
+    else {
+      list = h("ul", { class: "vc-deps" }, sv.data.map((dep) => {
+        const route = dep.route || {}, trip = dep.trip || {}, de = dep.departure || {};
+        const c = colorFor({ route_type: route.type, gtfs_route_short_name: route.short_name });
+        const delay = de.delay_seconds ?? null;
+        const mins = de.minutes;
+        const when = mins == null ? "" : mins <= 0 ? "teď" : mins < 60 ? `${mins} min` : hhmm(new Date(de.timestamp_predicted).toTimeString());
+        const sched = de.timestamp_scheduled ? new Date(de.timestamp_scheduled).toTimeString().slice(0, 5) : "";
+        const veh = dep.vehicle?.id && vehicles.get(dep.vehicle.id);
+        const li = h("li", { class: `${trip.is_canceled ? "canceled" : ""} ${veh ? "has-veh" : ""}`, title: veh ? "Ukázat vozidlo" : null },
+          h("span", { class: "dl", style: `background:${c}` }, route.short_name),
+          h("span", { class: "dh" }, trip.headsign, dep.vehicle?.is_wheelchair_accessible ? h("span", { class: "acc", title: "bezbariérové" }, " ♿") : null,
+            trip.is_canceled ? h("span", { class: "tag" }, "odřeknuto") : null),
+          h("span", { class: "dt" },
+            h("b", null, when),
+            h("small", { class: delay >= 60 ? "late" : null }, delay >= 60 ? `${sched} +${Math.round(delay / 60)}` : sched)),
+        );
+        if (veh) li.addEventListener("click", () => { stopView = null; openCard(veh.id); });
+        return li;
+      }));
+    }
+    return h("div", { class: "vc-depview" }, head, list);
+  }
+
   function renderCard(id) {
     const v = vehicles.get(id);
     const p = v ? v.props : {};
@@ -456,6 +628,7 @@
     const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
     close.addEventListener("click", closeCard);
     head.append(close);
+    if (stopView) return h("div", { class: "vc", style: `--c:${color}` }, head, renderDepartures(p));
 
     const age = info?.origin_timestamp ? ago(info.origin_timestamp) : null;
     const status = h("div", { class: "vc-status" },
@@ -643,7 +816,7 @@
     }
     sync(v);
 
-    if (openId === id) { refreshCard(id); loadDetail(id); }
+    if (openId === id) { refreshCard(id); loadDetail(id); if (stopView) loadDepartures(); }
     return id;
   }
 

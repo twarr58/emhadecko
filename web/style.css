@@ -140,3 +140,35 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .sk-w60 { width: 60%; }
 .vc-stops-sk { padding: 6px 14px 4px; }
 @keyframes sk { to { background-position: -200% 0; } }
+
+/* klikací zastávky, celý jízdní řád */
+.vc-stops li.stop { cursor: pointer; border-radius: 6px; }
+.vc-stops li.stop:hover .name { text-decoration: underline; text-underline-offset: 2px; }
+.vc-stops.all { max-height: none; }
+.vc-stops .zone { margin-left: 6px; font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.vc-more {
+  display: block; width: calc(100% - 28px); margin: 0 14px 6px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--soft); color: var(--fg); font: 600 12px system-ui, sans-serif; cursor: pointer;
+}
+.vc-more:hover { border-color: var(--c); }
+
+/* odjezdy ze zastávky */
+.vc-sub { padding: 12px 14px 6px; }
+.vc-back { border: 0; background: none; color: var(--c); font: 600 12px system-ui, sans-serif; padding: 0; cursor: pointer; }
+.vc-subtitle { margin-top: 6px; }
+.vc-subtitle .lbl { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.vc-subtitle b { font-size: 17px; }
+.vc-deps { list-style: none; margin: 0; padding: 4px 8px 12px; }
+.vc-deps li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; }
+.vc-deps li + li { border-top: 1px solid var(--border); }
+.vc-deps li.has-veh { cursor: pointer; }
+.vc-deps li.has-veh:hover { background: var(--soft); }
+.vc-deps li.canceled .dh, .vc-deps li.canceled .dt b { text-decoration: line-through; color: var(--muted); }
+.vc-deps .dl { min-width: 30px; padding: 2px 6px; box-sizing: border-box; border-radius: 6px; color: #fff; font-weight: 800; text-align: center; }
+.vc-deps .dh { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.vc-deps .dh .tag { margin-left: 6px; font-size: 10px; color: var(--major); text-transform: uppercase; }
+.vc-deps .dt { text-align: right; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.vc-deps .dt b { display: block; font-size: 15px; }
+.vc-deps .dt small { color: var(--muted); font-size: 11px; }
+.vc-deps .dt small.late { color: var(--major); }
+.vc-deps li.has-veh .dl { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #22c55e; }
