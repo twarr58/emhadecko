@@ -50,13 +50,13 @@ dialog input { width: 100%; box-sizing: border-box; padding: 6px; }
 dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 
 /* ---------- karta vozidla (pevný panel) ---------- */
-#card {
+.sheet {
   position: absolute; z-index: 1000; top: 12px; left: 56px; width: 340px; max-height: calc(100% - 24px);
   overflow-y: auto; overscroll-behavior: contain; border-radius: 14px; background: var(--bg); color: var(--fg);
   box-shadow: 0 12px 32px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.12); font: 13px/1.4 system-ui, sans-serif;
 }
 @media (max-width: 640px) {
-  #card { left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 62%; border-radius: 16px 16px 0 0; }
+  .sheet { left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 62%; border-radius: 16px 16px 0 0; }
 }
 .vc-head { position: sticky; top: 0; z-index: 2; }
 .vc-close {
@@ -172,3 +172,37 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-deps .dt small { color: var(--muted); font-size: 11px; }
 .vc-deps .dt small.late { color: var(--major); }
 .vc-deps li.has-veh .dl { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #22c55e; }
+
+/* výluky a mimořádnosti */
+#alerts-btn {
+  display: grid; gap: 5px; width: 100%; margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--soft); color: var(--fg); font: 600 12px system-ui, sans-serif; cursor: pointer; text-align: left;
+}
+#alerts-btn:hover { border-color: #d97706; }
+#alerts-btn .ic { color: #d97706; }
+#alerts-btn .pills { display: flex; flex-wrap: wrap; gap: 4px; }
+#alerts-btn .pills span { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+#alerts-btn .inc { background: var(--major-bg); color: var(--major); }
+#alerts-btn .vy { background: var(--minor-bg); color: var(--minor); }
+#alerts-btn.has-incident { border-color: var(--major); }
+.al-note { padding: 10px 14px 0; font-size: 11px; color: var(--muted); }
+.al-h { margin: 14px 14px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.al-h.inc { color: var(--major); }
+.al-list { list-style: none; margin: 0; padding: 0 14px; }
+.al { padding: 9px 0; border-bottom: 1px solid var(--border); }
+.al:last-child { border-bottom: 0; }
+.al-top { display: flex; gap: 8px; align-items: baseline; font-size: 11px; color: var(--muted); }
+.al-kind { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--minor-bg); color: var(--minor); }
+.al.mimoradnost .al-kind { background: var(--major-bg); color: var(--major); }
+.al-title { display: block; margin-top: 3px; color: var(--fg); font-weight: 600; text-decoration: none; }
+.al-title:hover { text-decoration: underline; }
+.al-lines { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.al-lines span { font: 700 10px/1 system-ui, sans-serif; padding: 3px 5px; border-radius: 4px; background: var(--soft); border: 1px solid var(--border); }
+.al-sum { margin: 5px 0 0; font-size: 12px; color: var(--muted); white-space: pre-line; }
+.vc-alerts { grid-column: 1 / -1; border-radius: 10px; background: var(--minor-bg); color: var(--fg); }
+.vc-alerts.inc { background: var(--major-bg); }
+.vc-alerts summary { padding: 8px 10px; cursor: pointer; font-weight: 600; font-size: 12px; }
+.vc-alerts summary .ic { color: #d97706; }
+.vc-alerts.inc summary .ic { color: var(--major); }
+.vc-alerts .al-list { padding: 0 10px 4px; }
+.vc-alerts .al { border-color: rgba(0,0,0,.08); }

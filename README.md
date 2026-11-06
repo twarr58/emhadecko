@@ -12,6 +12,18 @@ aktuální výřez mapy. Golemio posílá `Access-Control-Allow-Origin: *`, tak�
 to z GitHub Pages projde. Mezi dvěma polohami se vozidla plynule animují.
 Filtrovat jde podle druhu dopravy a čísla linky a zpoždění nad 3 minuty je zvýrazněné.
 
+## Výluky a mimořádnosti
+
+RSS kanály [pid.cz](https://pid.cz/rss-kanal/) nemají CORS, takže je prohlížeč přímo nenačte.
+Workflow `pages.yml` je proto každých 15 minut (a při každém deployi) stáhne skriptem
+`scripts/fetch_alerts.py`, převede na `alerts.json` a nasadí spolu se stránkou.
+Mimořádnosti tak mohou být až ~15 minut pozadu.
+GitHub plánované běhy pozastaví po 60 dnech bez aktivity v repu; pak stačí workflow ručně spustit.
+
+```bash
+python3 scripts/fetch_alerts.py web/alerts.json
+```
+
 ## API klíč
 
 Golemio vyžaduje [API klíč zdarma](https://api.golemio.cz/api-keys) (`X-Access-Token`).

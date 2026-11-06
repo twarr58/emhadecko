@@ -223,6 +223,7 @@
     const v = vehicles.get(id);
     if (!v) return;
     if (openId !== id) { showAllStops = false; stopView = null; clearTrip(); }
+    if (!$alerts.hidden) closeAlerts();
     openId = id;
     $card.hidden = false;
     $card.scrollTop = 0;
@@ -647,6 +648,9 @@
         h("b", null, where[1])));
     }
 
+    const lineAlerts = renderLineAlerts(p.gtfs_route_short_name);
+    if (lineAlerts) status.append(lineAlerts);
+
     let body;
     if (d?.error && !data) body = h("div", { class: "vc-msg" }, "Detail spoje se nepodařilo načíst.");
     else if (!data) body = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
@@ -851,6 +855,111 @@
     let shown = 0;
     for (const v of vehicles.values()) if (v.mode) shown++;
     setStatus(`${shown} / ${vehicles.size} vozidel${extra}`);
+  }
+
+  // ---------- výluky a mimořádnosti (RSS pid.cz → alerts.json, generuje workflow) ----------
+  const $alerts = document.getElementById("alerts");
+  const $alertsBtn = document.getElementById("alerts-btn");
+  let alerts = [];
+  let alertsGenerated = null;
+
+  const isActive = (a, now = Date.now()) => (!a.from || a.from * 1000 <= now) && (!a.to || a.to * 1000 >= now);
+  const lineKey = (l) => String(l).trim().toUpperCase();
+
+  function alertsForLine(line) {
+    const k = lineKey(line);
+    return alerts.filter((a) => isActive(a) && a.lines.some((l) => lineKey(l) === k))
+      .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "mimoradnost" ? -1 : 1));
+  }
+
+  async function loadAlerts() {
+    try {
+      const res = await fetch("alerts.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      alerts = Array.isArray(data.items) ? data.items : [];
+      alertsGenerated = data.generated ? new Date(data.generated * 1000) : null;
+    } catch { return; }
+    const active = alerts.filter((a) => isActive(a));
+    const incidents = active.filter((a) => a.kind === "mimoradnost").length;
+    $alertsBtn.hidden = !alerts.length;
+    $alertsBtn.classList.toggle("has-incident", incidents > 0);
+    const plural = (n, one, few, many) => `${n} ${n === 1 ? one : n > 1 && n < 5 ? few : many}`;
+    const closures = active.length - incidents;
+    $alertsBtn.replaceChildren(
+      h("span", { class: "t" }, h("span", { class: "ic" }, "⚠"), " Omezení provozu"),
+      h("span", { class: "pills" },
+        incidents ? h("span", { class: "inc" }, plural(incidents, "mimořádnost", "mimořádnosti", "mimořádností")) : null,
+        h("span", { class: "vy" }, plural(closures, "výluka", "výluky", "výluk"))));
+    if (!$alerts.hidden) renderAlerts();
+    if (openId) refreshCard(openId);
+  }
+
+  function alertItem(a, compact = false) {
+    return h("li", { class: `al ${a.kind}` },
+      h("div", { class: "al-top" },
+        h("span", { class: "al-kind" }, a.kind === "mimoradnost" ? "Mimořádnost" : "Výluka"),
+        h("span", { class: "al-when" }, a.when)),
+      h("a", { class: "al-title", href: a.link, target: "_blank", rel: "noopener" }, a.title, " ↗"),
+      !compact && a.lines.length ? h("div", { class: "al-lines" }, a.lines.slice(0, 24).map((l) => h("span", null, l)),
+        a.lines.length > 24 ? h("span", null, `+${a.lines.length - 24}`) : null) : null,
+      !compact && a.summary ? h("p", { class: "al-sum" }, a.summary) : null);
+  }
+
+  function renderAlerts() {
+    const now = Date.now();
+    const match = (a) => !lineFilter || a.lines.some((l) => lineFilter.has(lineKey(l)));
+    const shown = alerts.filter(match);
+    const incidents = shown.filter((a) => a.kind === "mimoradnost" && isActive(a, now));
+    const current = shown.filter((a) => a.kind === "vyluka" && isActive(a, now));
+    const upcoming = shown.filter((a) => a.from && a.from * 1000 > now).sort((a, b) => a.from - b.from);
+
+    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    close.addEventListener("click", closeAlerts);
+    const section = (title, items, cls = "") => items.length
+      ? [h("h3", { class: `al-h ${cls}` }, `${title} (${items.length})`), h("ul", { class: "al-list" }, items.map((a) => alertItem(a)))]
+      : [];
+
+    $alerts.replaceChildren(h("div", { class: "vc", style: "--c:#b45309" },
+      h("header", { class: "vc-head" },
+        h("div", { class: "vc-line" }, "⚠"),
+        h("div", { class: "vc-title" },
+          h("div", { class: "vc-kind" }, "PID"),
+          h("div", { class: "vc-dest" }, "Výluky a mimořádnosti")),
+        close),
+      h("div", { class: "al-note" },
+        lineFilter ? `Jen pro linky: ${[...lineFilter].join(", ")} (podle filtru linek)` : "Tip: filtrem linek v panelu zúžíš výpis na své linky.",
+        alertsGenerated ? h("span", null, ` · aktualizováno ${alertsGenerated.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}`) : null),
+      ...section("Mimořádnosti", incidents, "inc"),
+      ...section("Aktuální výluky", current),
+      ...section("Připravované (7 dní)", upcoming, "up"),
+      !incidents.length && !current.length && !upcoming.length ? h("div", { class: "vc-msg" }, "Nic nenalezeno.") : null,
+      h("footer", { class: "vc-foot" }, "Zdroj: RSS pid.cz")));
+  }
+
+  function openAlerts() {
+    if (openId) closeCard();
+    $alerts.hidden = false;
+    $alerts.scrollTop = 0;
+    renderAlerts();
+  }
+  function closeAlerts() { $alerts.hidden = true; $alerts.replaceChildren(); }
+
+  $alertsBtn.addEventListener("click", () => ($alerts.hidden ? openAlerts() : closeAlerts()));
+  $lines.addEventListener("input", () => { if (!$alerts.hidden) renderAlerts(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$alerts.hidden) closeAlerts(); });
+  loadAlerts();
+  setInterval(loadAlerts, 5 * 60 * 1000);
+
+  /** upozornění v kartě vozidla */
+  function renderLineAlerts(line) {
+    const list = alertsForLine(line);
+    if (!list.length) return null;
+    const inc = list.some((a) => a.kind === "mimoradnost");
+    return h("details", { class: `vc-alerts ${inc ? "inc" : ""}` },
+      h("summary", null, h("span", { class: "ic" }, "⚠"),
+        ` Na lince ${line} ${list.length === 1 ? "platí 1 omezení" : `platí ${list.length} ${list.length < 5 ? "omezení" : "omezení"}`}`),
+      h("ul", { class: "al-list" }, list.map((a) => alertItem(a, true))));
   }
 
   // ---------- fetch ----------
