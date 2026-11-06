@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }
 :root {
   --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --border: #e5e7eb; --soft: #f3f4f6;
   --ok: #15803d; --ok-bg: #dcfce7; --minor: #a16207; --minor-bg: #fef9c3;
@@ -125,10 +126,6 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-veh .model { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
 .vc-veh .meta { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .vc-veh .meta span { overflow-wrap: anywhere; }
-.vc-photo { margin: 0 0 10px; }
-.vc-photo img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px; background: var(--soft); }
-.vc-photo figcaption { font-size: 10px; color: var(--muted); margin-top: 4px; }
-.vc-photo a { color: inherit; }
 .feats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .feat { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--soft); }
 .vc-foot { padding: 0 14px 10px; font-size: 10px; color: var(--muted); font-family: ui-monospace, monospace; }
@@ -206,3 +203,18 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-alerts.inc summary .ic { color: var(--major); }
 .vc-alerts .al-list { padding: 0 10px 4px; }
 .vc-alerts .al { border-color: rgba(0,0,0,.08); }
+
+/* bubliny zastávek vybraného spoje */
+.leaflet-tooltip.stop-tip-wrap { padding: 0; border: 0; border-radius: 10px; background: var(--bg); color: var(--fg); box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.leaflet-tooltip.stop-tip-wrap::before { display: none; }
+.stop-tip { padding: 8px 11px; min-width: 170px; font: 12px/1.35 system-ui, sans-serif; }
+.stop-tip .st { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.stop-tip .nm { font-weight: 700; font-size: 13px; }
+.stop-tip .big { font-size: 16px; font-weight: 800; margin-top: 2px; }
+.stop-tip .sm { color: var(--muted); font-variant-numeric: tabular-nums; }
+.stop-tip .sm .late { color: var(--major); }
+.stop-tip .sm .early { color: var(--early); }
+.stop-tip .hint { margin-top: 4px; font-size: 10px; color: var(--muted); }
+.stop-tip.compact { min-width: 0; padding: 4px 9px; white-space: nowrap; }
+.stop-tip.compact .eta { font-weight: 800; }
+.leaflet-tooltip.stop-tip-wrap.next { border-left: 4px solid var(--fg); }

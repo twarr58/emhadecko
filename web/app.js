@@ -434,42 +434,6 @@
     return h("div", null, h("ol", { class: "vc-stops all" }, rows), less);
   }
 
-  // ---------- ilustrační foto modelu vozu z Wikipedie (Golemio obrázky nemá) ----------
-  /** @type {Map<string, {thumb?: string, url?: string, title?: string}|"pending">} */
-  const photos = new Map();
-  const norm = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-
-  function vehiclePhoto(model) {
-    const cached = photos.get(model);
-    if (cached === "pending") return null;
-    if (cached) return cached;
-    photos.set(model, "pending");
-    (async () => {
-      const brand = norm(model.split(/[\s-]/)[0]);
-      for (const lang of ["cs", "en"]) {
-        try {
-          const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
-          Object.entries({
-            action: "query", format: "json", origin: "*", generator: "search", gsrsearch: model, gsrlimit: "5",
-            prop: "pageimages|info", piprop: "thumbnail", pithumbsize: "640", inprop: "url",
-          }).forEach(([k, v]) => url.searchParams.set(k, v));
-          const res = await fetch(url);
-          if (!res.ok) continue;
-          const pages = Object.values((await res.json())?.query?.pages || {}).sort((a, b) => a.index - b.index);
-          // jen článek o stejném výrobci, ať neukážeme náhodný obrázek
-          const hit = pages.find((pg) => pg.thumbnail?.source && norm(pg.title).includes(brand));
-          if (hit) {
-            photos.set(model, { thumb: hit.thumbnail.source, url: hit.fullurl, title: hit.title });
-            break;
-          }
-        } catch { /* zkusíme další jazyk */ }
-      }
-      if (photos.get(model) === "pending") photos.set(model, {});
-      if (openId) refreshCard(openId);
-    })();
-    return null;
-  }
-
   // ---------- vybraný spoj na mapě: trasa + zastávky, odjezdy ze zastávky ----------
   map.createPane("trip").style.zIndex = 390; // pod tečkami vozidel
   map.createPane("tripStops").style.zIndex = 450; // nad tečkami, ať jdou zastávky rozkliknout
@@ -512,7 +476,10 @@
     const info = d.info || d;
     const sh = shapes.get(trip);
     const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${typeof sh === "object"}`;
-    if (key === tripKey) return;
+    if (key === tripKey) {
+      nextStopMarker?.getTooltip()?.update();
+      return;
+    }
     tripKey = key;
     tripLayer.clearLayers();
     const color = colorFor(v.props);
@@ -520,22 +487,101 @@
       L.polyline(sh.coords.map(([lng, lat]) => [lat, lng]), { pane: "trip", color, weight: 6, opacity: 0.55, interactive: false }).addTo(tripLayer);
     }
     const last = info.last_stop_sequence ?? -1;
+    const atStop = v.props.state_position === "at_stop";
+    nextStopMarker = null;
     for (const f of stopFeatures(id)) {
       const s = f.properties;
+      const seq = s.stop_sequence;
       const [lng, lat] = f.geometry.coordinates;
-      const passed = s.stop_sequence < last || (s.stop_sequence === last && v.props.state_position !== "at_stop");
-      const sel = stopView?.seq === s.stop_sequence;
-      L.circleMarker([lat, lng], {
-        pane: "tripStops", radius: sel ? 8 : 5, weight: sel ? 4 : 2.5, color: passed ? "#9ca3af" : color,
-        fillColor: "#fff", fillOpacity: 1,
+      const passed = seq < last || (seq === last && !atStop);
+      const isNext = atStop ? seq === last : seq === nextSeq(id);
+      const sel = stopView?.seq === seq;
+      const m = L.circleMarker([lat, lng], {
+        pane: "tripStops", radius: sel ? 8 : isNext ? 7 : 5, weight: sel ? 4 : isNext ? 3 : 2.5,
+        color: passed ? "#9ca3af" : color, fillColor: isNext ? color : "#fff", fillOpacity: 1,
       })
-        .bindTooltip(`${s.stop_name} · ${hhmm(s.realtime_arrival_time || s.arrival_time)}`, { direction: "top", offset: [0, -6] })
-        .on("click", () => openStop(s.stop_sequence, s.stop_name))
+        // obsah jako funkce → při každém zobrazení aktuální časy a "za X min"
+        .bindTooltip(() => stopTip(id, seq, false), { direction: "top", offset: [0, -8], className: "stop-tip-wrap" })
+        .on("click", () => openStop(seq, s.stop_name))
         .addTo(tripLayer);
+      if (isNext) {
+        // příští zastávka: trvalý štítek s časem příjezdu
+        m.unbindTooltip().bindTooltip(() => stopTip(id, seq, true), {
+          permanent: true, direction: "right", offset: [10, 0], className: "stop-tip-wrap next",
+        });
+        nextStopMarker = m;
+      }
     }
   }
 
-  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; }
+  let nextStopMarker = null;
+  // štítek příští zastávky přepočítáváme, ať "za X min" odpovídá
+  setInterval(() => { if (nextStopMarker && map.hasLayer(nextStopMarker)) nextStopMarker.getTooltip()?.update(); }, 15000);
+
+  function nextSeq(id) {
+    const info = details.get(id)?.data?.info || details.get(id)?.data;
+    const feats = stopFeatures(id).map((f) => f.properties.stop_sequence);
+    const last = info?.last_stop_sequence;
+    if (last == null) return feats[0];
+    return feats.find((q) => q > last);
+  }
+
+  /** "HH:MM:SS" z GTFS (může být i 24:10:00) → Date nejblíž k teď */
+  function gtfsTime(t) {
+    const m = /^(\d+):(\d\d)(?::(\d\d))?/.exec(t || "");
+    if (!m) return null;
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    let ms = d.getTime() + ((+m[1] * 60 + +m[2]) * 60 + +(m[3] || 0)) * 1000;
+    const now = Date.now();
+    if (ms - now > 12 * 3600e3) ms -= 86400e3;
+    if (now - ms > 12 * 3600e3) ms += 86400e3;
+    return ms;
+  }
+
+  function relTime(ms) {
+    const diff = ms - Date.now();
+    const min = Math.round(Math.abs(diff) / 60000);
+    if (min === 0) return "teď";
+    const txt = min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`;
+    return diff > 0 ? `za ${txt}` : `před ${txt}`;
+  }
+
+  function stopTip(id, seq, compact) {
+    const f = stopFeatures(id).find((x) => x.properties.stop_sequence === seq);
+    const v = vehicles.get(id);
+    if (!f || !v) return "";
+    const s = f.properties;
+    const info = details.get(id)?.data?.info || details.get(id)?.data || {};
+    const last = info.last_stop_sequence ?? -1;
+    const atStop = v.props.state_position === "at_stop";
+    const here = atStop && seq === last;
+    const passed = seq < last || (seq === last && !atStop);
+    // projeté zastávky → odjezd, ostatní → příjezd (ve stanici → odjezd)
+    const useDep = passed || here;
+    const sched = useDep ? s.departure_time : s.arrival_time;
+    const rt = (useDep ? s.realtime_departure_time : s.realtime_arrival_time) || sched;
+    const rtMs = gtfsTime(rt), schedMs = gtfsTime(sched);
+    const delayMin = rtMs != null && schedMs != null ? Math.round((rtMs - schedMs) / 60000) : 0;
+    // budoucí zastávka s časem v minulosti = predikce ještě nedohnala zpoždění
+    const when = rtMs == null ? "" : !passed && rtMs < Date.now() ? "každou chvíli" : relTime(rtMs);
+
+    if (compact) {
+      return h("div", { class: "stop-tip compact" },
+        h("b", null, s.stop_name), " · ", h("span", { class: "eta" }, here ? `odjíždí ${when}` : when));
+    }
+    const status = here ? "Vozidlo je ve stanici" : passed ? "Projeto" : seq === nextSeq(id) ? "Příští zastávka" : null;
+    return h("div", { class: "stop-tip" },
+      status ? h("div", { class: "st" }, status) : null,
+      h("div", { class: "nm" }, s.stop_name),
+      h("div", { class: "big" }, passed ? `odjel ${when}` : here ? `odjíždí ${when}` : `přijede ${when}`),
+      h("div", { class: "sm" },
+        `${useDep ? "odjezd" : "příjezd"} ${hhmm(rt)}`,
+        delayMin ? h("span", { class: delayMin > 0 ? "late" : "early" }, ` (jízdní řád ${hhmm(sched)}, ${delayMin > 0 ? "+" : ""}${delayMin} min)`) : " · podle jízdního řádu"),
+      h("div", { class: "hint" }, "Klikni pro odjezdy ze zastávky"));
+  }
+
+  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; nextStopMarker = null; }
 
   function openStop(seq, name) {
     stopView = { seq, name, data: null, error: null, loading: false };
@@ -662,12 +708,7 @@
     if (desc?.has_usb_chargers) feats.push(h("span", { class: "feat", title: "USB nabíječky" }, "⚡ USB"));
 
     const model = desc?.vehicle_type || null;
-    const photo = model ? vehiclePhoto(model) : null;
     const veh = h("div", { class: "vc-veh" },
-      photo?.thumb ? h("figure", { class: "vc-photo" },
-        h("img", { src: photo.thumb, alt: model, loading: "lazy" }),
-        h("figcaption", null, "Ilustrační foto · ",
-          h("a", { href: photo.url, target: "_blank", rel: "noopener" }, `Wikipedie: ${photo.title}`))) : null,
       h("div", { class: "model" }, model || "Vozidlo"),
       h("div", { class: "meta" },
         regNo ? h("span", null, `ev. č. ${regNo}`) : null,
