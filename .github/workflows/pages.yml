@@ -22,7 +22,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Secret GOLEMIO_API_KEY se vloží do config.js, aby návštěvníci nemuseli
       # zadávat vlastní klíč. Klíč je tím veřejně čitelný ve zdrojáku stránky
@@ -39,9 +39,9 @@ jobs:
             '"window.EMHADECKO_CONFIG = " + ({apiBase: "https://api.golemio.cz", apiKey: $k, pollSeconds: 10} | tojson) + ";"' \
             > web/config.js
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: web
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
