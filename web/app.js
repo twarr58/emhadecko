@@ -89,7 +89,8 @@
 
   function askKey() {
     return new Promise((resolve) => {
-      $keyInput.value = getKey() || "";
+      // klíč vložený při buildu nepředvyplňujeme, jen vlastní klíč uživatele
+      $keyInput.value = store.get(KEY_STORAGE) || "";
       $dialog.addEventListener("close", () => {
         const v = $keyInput.value.trim();
         if (v) store.set(KEY_STORAGE, v);
