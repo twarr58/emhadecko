@@ -123,7 +123,8 @@
   let viewBounds = map.getBounds().pad(0.1);
 
   // vozidla přestupních spojů otevřené karty: na mapě vždy vidět (i přes filtr) a zvýrazněná
-  let xferTrips = new Set();
+  /** trip_id → text na štítek ("2 min"); když není prázdná, ostatní vozidla se ztlumí */
+  let xferTrips = new Map();
   // málo viditelných vozidel (typicky vybraná linka) → štítky i při oddálení, ať nezapadnou
   const FEW_LIMIT = 60;
   let fewMode = false;
@@ -147,19 +148,28 @@
 
   function dotStyle(p) {
     const late = (p.delay ?? 0) >= 180;
-    return { fillColor: colorFor(p), color: late ? "#ffb000" : "#fff", weight: late ? 2 : 1 };
+    const dim = xferTrips.size > 0 && !xferTrips.has(p.gtfs_trip_id);
+    return {
+      fillColor: colorFor(p), color: late ? "#ffb000" : "#fff", weight: late ? 2 : 1,
+      opacity: dim ? 0.25 : 1, fillOpacity: dim ? 0.25 : 1,
+    };
   }
 
-  function iconFor(p) {
+  /** ikona štítku; když se klíč shoduje s prevKey, vrací icon: null (nic nestavíme) */
+  function iconFor(p, prevKey) {
     const color = colorFor(p);
     const late = (p.delay ?? 0) >= 180;
     const hasBearing = typeof p.bearing === "number";
     const bearing = hasBearing ? Math.round(p.bearing / 5) * 5 : null;
     const xfer = xferTrips.has(p.gtfs_trip_id);
-    const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}|${xfer}`;
+    const xferText = xfer ? xferTrips.get(p.gtfs_trip_id) : "";
+    const sel = (p.vehicle_id || p.gtfs_trip_id) === openId;
+    const dim = xferTrips.size > 0 && !xfer && !sel;
+    const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}|${xfer}|${xferText}|${sel}|${dim}`;
+    if (key === prevKey) return { key, icon: null };
 
     const root = document.createElement("div");
-    root.className = "veh" + (late ? " late" : "") + (xfer ? " xfer" : "");
+    root.className = "veh" + (late ? " late" : "") + (xfer ? " xfer" : "") + (dim ? " dim" : "");
     if (hasBearing) {
       const a = document.createElement("div");
       a.className = "arrow";
@@ -171,6 +181,7 @@
     b.className = "badge";
     b.style.background = color;
     b.textContent = p.gtfs_route_short_name;
+    if (xferText) b.append(h("span", { class: "xt" }, ` · ${xferText}`));
     root.append(b);
 
     return { key, icon: L.divIcon({ html: root, className: "", iconSize: [0, 0] }) };
@@ -204,6 +215,7 @@
       }
       v.label.setLatLng(v.pos).addTo(map);
     }
+    if (v.label) v.label.setZIndexOffset(xferTrips.has(v.props.gtfs_trip_id) || v.id === openId ? 1000 : 0);
     v.mode = mode;
     if (mode === "label") requestShape(v);
   }
@@ -213,18 +225,23 @@
     fewMode = computeFewMode();
     for (const v of vehicles.values()) {
       if (v.label) {
-        const { key, icon } = iconFor(v.props);
-        if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
+        const { key, icon } = iconFor(v.props, v.iconKey);
+        if (icon) { v.label.setIcon(icon); v.iconKey = key; }
+        v.label.setZIndexOffset(xferTrips.has(v.props.gtfs_trip_id) || v.id === openId ? 1000 : 0);
       }
+      if (focusChanged) v.dot.setStyle(dotStyle(v.props));
       sync(v);
     }
+    focusChanged = false;
     updateCount();
   }
 
-  /** nastaví přestupní spoje otevřené karty (zvýraznění na mapě) */
-  function setXferTrips(ids) {
-    const next = new Set(ids);
-    if (next.size === xferTrips.size && [...next].every((x) => xferTrips.has(x))) return;
+  let focusChanged = false;
+  /** nastaví přestupní spoje otevřené karty: [trip_id, "2 min"][]; ostatní vozidla se ztlumí */
+  function setXferTrips(entries) {
+    const next = new Map(entries);
+    if (next.size === xferTrips.size && [...next].every(([k, t]) => xferTrips.get(k) === t)) return;
+    focusChanged = true;
     xferTrips = next;
     syncAll();
   }
@@ -260,8 +277,7 @@
       const prev = vehicles.get(openId);
       openId = id;
       setXferTrips([]);
-      if (prev) sync(prev);
-      sync(v); // vybrané vozidlo vždy jako štítek
+      syncAll(); // vybrané vozidlo vždy jako štítek, předchozí zpět
     }
     if (!$alerts.hidden) closeAlerts();
     openId = id;
@@ -298,7 +314,7 @@
     stopView = null;
     clearTrip();
     setXferTrips([]);
-    if (prev) sync(prev);
+    if (prev) syncAll();
     $card.hidden = true;
     $card.replaceChildren();
     selRing.remove();
@@ -808,13 +824,19 @@
           h("span", { class: "dt" },
             h("b", { class: a.cls || null }, a.txt),
             b ? h("small", null, `pak ${b.txt}`) : null));
-        if (veh) li.addEventListener("click", () => openCard(veh.id));
+        if (veh) {
+          li.addEventListener("click", () => openCard(veh.id));
+          // najetí na řádek zvýrazní vozidlo na mapě
+          li.addEventListener("mouseenter", () => veh.label?.getElement()?.classList.add("hot"));
+          li.addEventListener("mouseleave", () => veh.label?.getElement()?.classList.remove("hot"));
+        }
         return li;
       }));
     }
     const notes = (data?.infotexts || []).map((it) => h("div", { class: "tr-info" }, "ℹ ", it.text?.cs || ""));
-    const tripIds = (data?.departures || []).map((dep) => dep.trip?.id).filter(Boolean);
-    queueMicrotask(() => { if (openId === id && !stopView) setXferTrips(tripIds); });
+    const xfers = (data?.departures || []).filter((dep) => dep.trip?.id)
+      .map((dep) => [dep.trip.id, minutesLabel((dep.departure_timestamp?.minutes || [])[0]).txt]);
+    queueMicrotask(() => { if (openId === id && !stopView) setXferTrips(xfers); });
     return h("section", { class: "vc-tr" }, head, chips, ...notes, list);
   }
 
@@ -988,8 +1010,8 @@
     v.props = p;
     if (colorFor(prev) !== colorFor(p) || (prev.delay ?? 0) >= 180 !== (p.delay ?? 0) >= 180) v.dot.setStyle(dotStyle(p));
     if (v.label) {
-      const { key, icon } = iconFor(p);
-      if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
+      const { key, icon } = iconFor(p, v.iconKey);
+      if (icon) { v.label.setIcon(icon); v.iconKey = key; }
     }
 
     // Poloha se nezměnila = vozidlo zatím neposlalo novou polohu (nebo stojí). Rozjetou animaci necháme doběhnout.

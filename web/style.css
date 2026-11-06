@@ -244,5 +244,14 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 }
 
 /* vozidla přestupních spojů */
-.veh.xfer .badge { outline: 2px dashed var(--fg); outline-offset: 2px; }
+.veh.dim { opacity: .28; }
+.veh.xfer .badge {
+  transform: translate(-50%, -50%) scale(1.25); z-index: 2;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px #22c55e, 0 0 16px 6px rgba(34,197,94,.65);
+  animation: xfer-glow 1.6s ease-in-out infinite;
+}
+.veh.xfer .badge .xt { font-weight: 700; opacity: .95; }
+.veh.xfer .arrow { color: #22c55e !important; }
+.hot .veh .badge { transform: translate(-50%, -50%) scale(1.6); animation: none; box-shadow: 0 0 0 2px #fff, 0 0 0 6px #22c55e, 0 0 22px 10px rgba(34,197,94,.8); }
+@keyframes xfer-glow { 50% { box-shadow: 0 0 0 2px #fff, 0 0 0 5px #22c55e, 0 0 6px 2px rgba(34,197,94,.3); } }
 .tr-list .onmap { color: #22c55e; font-size: 11px; }
