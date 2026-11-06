@@ -224,7 +224,7 @@
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
-    if (openId !== id) { showAllStops = false; stopView = null; clearTrip(); }
+    if (openId !== id) { showAllStops = false; stopView = null; transferSeq = null; clearTrip(); }
     if (!$alerts.hidden) closeAlerts();
     openId = id;
     $card.hidden = false;
@@ -347,6 +347,7 @@
     } finally {
       d.loading = false;
       refreshCard(id);
+      if (d.data && !stopView) loadTransfers(id);
     }
   }
 
@@ -654,6 +655,124 @@
     return h("div", { class: "vc-depview" }, head, list);
   }
 
+  // ---------- přestupy: přestupní tablo PID pro zastávky před vozidlem ----------
+  // /v4/pid/transferboards vrací odjezdy ze všech nástupišť uzlu (vč. navazujícího metra/vlaku)
+  // bez vlastního vozidla. Ptáme se k času předpokládaného příjezdu, takže minuty jsou "po příjezdu".
+  const RT_NUM = { tram: 0, metro: 1, train: 2, bus: 3, ferry: 4, funicular: 7, trolleybus: 11 };
+  const NUM_RT = Object.fromEntries(Object.entries(RT_NUM).map(([k, n]) => [n, k]));
+  const TRANSFER_TTL = 30_000;
+  let transferSeq = null; // zvolená zastávka (null = příští)
+  /** key → {data, error, loading, at} */
+  const transfers = new Map();
+
+  const aswFromStopId = (id) => { const m = /^U(\d+)Z(\d+)/.exec(id || ""); return m ? `${m[1]}_${m[2]}` : null; };
+  function localIso(ms) {
+    const d = new Date(ms), p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+  }
+
+  /** zastávky, kde se dá ještě přestoupit (aktuální ve stanici + všechny před vozidlem) */
+  function transferStops(id) {
+    const v = vehicles.get(id);
+    const info = details.get(id)?.data?.info || details.get(id)?.data || {};
+    const last = info.last_stop_sequence ?? -1;
+    const atStop = v?.props.state_position === "at_stop";
+    return stopFeatures(id).map((f) => f.properties)
+      .filter((s) => s.stop_sequence > last || (atStop && s.stop_sequence === last));
+  }
+
+  function transferContext(id) {
+    const stops = transferStops(id);
+    if (!stops.length) return null;
+    const stop = stops.find((s) => s.stop_sequence === transferSeq) || stops[0];
+    const v = vehicles.get(id);
+    const desc = details.get(id)?.data?.vehicle_descriptor;
+    const reg = desc?.vehicle_registration_number || (String(v?.props.vehicle_id || "").match(/(\d+)$/) || [])[1];
+    const arr = gtfsTime(stop.realtime_arrival_time || stop.arrival_time);
+    const timeFrom = arr && arr > Date.now() + 30_000 ? localIso(arr) : null;
+    return { stops, stop, reg, arr, timeFrom, routeType: RT_NUM[v?.props.route_type] };
+  }
+
+  async function loadTransfers(id) {
+    const ctx = transferContext(id);
+    const v = vehicles.get(id);
+    if (!ctx || !v || !ctx.reg || ctx.routeType == null) return;
+    const ids = await loadTripStops(v.props.gtfs_trip_id);
+    const asw = aswFromStopId(ids?.get(ctx.stop.stop_sequence));
+    if (!asw) return;
+    const key = `${asw}|${ctx.timeFrom || "now"}|${ctx.reg}|${ctx.routeType}`;
+    const t = transfers.get(key) || {};
+    ctx.key = key;
+    if (t.loading || (t.at && Date.now() - t.at < TRANSFER_TTL)) { transferKeyFor.set(id, key); return; }
+    transfers.set(key, { ...t, loading: true });
+    transferKeyFor.set(id, key);
+    const params = [["aswId", asw], ["vehicleRegistrationNumber", ctx.reg], ["routeType", String(ctx.routeType)], ["limit", "12"]];
+    if (ctx.timeFrom) params.push(["timeFrom", ctx.timeFrom]);
+    try {
+      const data = await apiFetch("/v4/pid/transferboards", params);
+      transfers.set(key, { data, error: null, loading: false, at: Date.now() });
+    } catch (e) {
+      transfers.set(key, { data: t.data || null, error: e.message, loading: false, at: Date.now() });
+    }
+    if (transfers.size > 60) transfers.delete(transfers.keys().next().value);
+    refreshCard(id);
+  }
+  const transferKeyFor = new Map();
+
+  function minutesLabel(m) {
+    if (m == null) return { txt: "", cls: "" };
+    if (m === "<1" || m === "0") return { txt: "hned", cls: "tight" };
+    const n = Number(m);
+    return { txt: `${m} min`, cls: n <= 1 ? "tight" : "" };
+  }
+
+  function renderTransfers(id) {
+    const ctx = transferContext(id);
+    if (!ctx) return null;
+    const t = transfers.get(transferKeyFor.get(id)) || null;
+    const chips = h("div", { class: "tr-stops" }, ctx.stops.slice(0, 10).map((s) => {
+      const b = h("button", { type: "button", class: s === ctx.stop ? "on" : null }, s.stop_name);
+      b.addEventListener("click", () => { transferSeq = s.stop_sequence; refreshCard(id); loadTransfers(id); });
+      return b;
+    }));
+    const when = !ctx.arr ? "" : ctx.arr < Date.now() ? "každou chvíli" : relTime(ctx.arr);
+    const head = h("div", { class: "tr-head" },
+      h("h3", null, "Přestupy"),
+      h("div", { class: "tr-sub" }, `${ctx.stop.stop_name} · příjezd ${hhmm(ctx.stop.realtime_arrival_time || ctx.stop.arrival_time)}`,
+        when ? ` (${when})` : "", ctx.timeFrom ? " · minuty po příjezdu" : ""));
+
+    let list;
+    const data = t?.data;
+    if (!ctx.reg) list = h("div", { class: "vc-msg" }, "Pro tento spoj přestupy nelze dohledat.");
+    else if (!data && t?.error) list = h("div", { class: "vc-msg" }, `Přestupy se nepodařilo načíst. ${t.error}`);
+    else if (!data) list = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
+    else if (!data.departures?.length) list = h("div", { class: "vc-msg" }, "V příští hodině odsud nic nenavazuje.");
+    else {
+      list = h("ul", { class: "vc-deps tr-list" }, data.departures.map((dep) => {
+        const type = NUM_RT[dep.route?.type] || "bus";
+        const c = colorFor({ route_type: type, gtfs_route_short_name: dep.route?.short_name });
+        const [m1, m2] = dep.departure_timestamp?.minutes || [];
+        const a = minutesLabel(m1), b = m2 != null ? minutesLabel(m2) : null;
+        const veh = [...vehicles.values()].find((x) => x.props.gtfs_trip_id === dep.trip?.id);
+        const li = h("li", { class: veh ? "has-veh" : null, title: veh ? "Ukázat vozidlo" : null },
+          h("span", { class: "dl", style: `background:${c}` }, dep.route?.short_name),
+          h("span", { class: "dh" },
+            dep.trip?.headsign,
+            dep.trip?.is_wheelchair_accessible ? h("span", { class: "acc", title: "bezbariérové" }, " ♿") : null,
+            dep.trip?.is_guaranteed_transfer ? h("span", { class: "tag ok", title: "Garantovaný přestup: spoj počká" }, "počká") : null,
+            dep.stop?.platform_code ? h("small", { class: "pl" }, ` · nást. ${dep.stop.platform_code}`) : null,
+            dep.substitution_text?.cs ? h("small", { class: "sub" }, dep.substitution_text.cs) : null),
+          h("span", { class: "dt" },
+            h("b", { class: a.cls || null }, a.txt),
+            b ? h("small", null, `pak ${b.txt}`) : null));
+        if (veh) li.addEventListener("click", () => openCard(veh.id));
+        return li;
+      }));
+    }
+    const notes = (data?.infotexts || []).map((it) => h("div", { class: "tr-info" }, "ℹ ", it.text?.cs || ""));
+    return h("section", { class: "vc-tr" }, head, chips, ...notes, list);
+  }
+
   function renderCard(id) {
     const v = vehicles.get(id);
     const p = v ? v.props : {};
@@ -718,7 +837,8 @@
       feats.length ? h("div", { class: "feats" }, feats) : null,
     );
 
-    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, veh,
+    const tr = data ? renderTransfers(id) : null;
+    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, tr, veh,
       h("footer", { class: "vc-foot" }, `spoj ${p.gtfs_trip_id || "?"}`));
   }
 
