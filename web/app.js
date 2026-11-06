@@ -397,7 +397,7 @@
       d.error = null;
       if (needShape && d.data?.shapes) {
         const sh = buildShape(d.data.shapes.features);
-        if (sh) shapes.set(trip, sh);
+        if (sh) { shapes.set(trip, sh); onShapeLoaded(trip); }
       }
     } catch (e) {
       d.error = e.message;
@@ -959,6 +959,21 @@
     return L.latLng(aLat + (bLat - aLat) * t, aLng + (bLng - aLng) * t);
   }
 
+  /** GPS poloha bývá o desítky metrů vedle; je-li blízko trasy spoje, přichytíme ji na trasu */
+  function snapToShape(trip, latlng) {
+    const sh = shapes.get(trip);
+    if (!sh || typeof sh !== "object") return latlng;
+    const pr = project(sh, latlng);
+    return pr.off < SHAPE_MAX_OFFSET ? pointAt(sh, pr.d) : latlng;
+  }
+
+  /** po načtení trasy hned přichytit stojící vozidla toho spoje */
+  function onShapeLoaded(trip) {
+    for (const v of vehicles.values()) {
+      if (v.props.gtfs_trip_id === trip && !moving.has(v.id)) setPos(v, snapToShape(trip, v.raw));
+    }
+  }
+
   function requestShape(v) {
     const trip = v.props.gtfs_trip_id;
     if (!trip || shapes.has(trip)) return;
@@ -981,7 +996,7 @@
       const key = getKey();
       fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-        .then((data) => shapes.set(trip, buildShape(data?.shapes?.features) || "none"))
+        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); })
         .catch((status) => { if (status === 429) shapes.delete(trip); else shapes.set(trip, "none"); })
         .finally(() => { shapeInflight--; pumpShapes(); });
     }
@@ -1028,7 +1043,7 @@
         (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
       if (animate) {
         v.from = v.pos;
-        v.to = latlng;
+        v.to = snapToShape(p.gtfs_trip_id, latlng);
         v.t0 = now;
         // animace trvá tak dlouho, jak často vozidlo hlásí polohu → plynule navazuje na další hlášení
         // (+15 %, aby další poloha přišla ještě během pohybu a vozidlo se nezastavovalo)
@@ -1045,7 +1060,7 @@
       } else {
         moving.delete(id);
         v.path = null;
-        setPos(v, latlng);
+        setPos(v, snapToShape(p.gtfs_trip_id, latlng));
       }
     }
     sync(v);
