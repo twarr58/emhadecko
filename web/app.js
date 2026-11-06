@@ -107,7 +107,6 @@
   // HTML štítky s číslem linky jen při přiblížení a jen pro vozidla ve výřezu.
   const LABEL_ZOOM = 14; // od tohoto zoomu štítky s číslem linky
   const ANIM_ZOOM = 12; // pod tímto zoomem se pohyb neanimuje (není vidět), jen se přepíše poloha
-  const FRAME_MS = 33; // animace max ~30 fps
 
   const dotRenderer = L.canvas({ padding: 0.3, tolerance: 6 });
 
@@ -188,6 +187,7 @@
       v.label.setLatLng(v.pos).addTo(map);
     }
     v.mode = mode;
+    if (mode === "label") requestShape(v);
   }
 
   function syncAll() {
@@ -424,6 +424,84 @@
       h("footer", { class: "vc-foot" }, `spoj ${p.gtfs_trip_id || "?"}`));
   }
 
+  // ---------- trasy spojů (aby vozidla jezdila po silnici/kolejích, ne vzduchem) ----------
+  // Trasa se stahuje jen pro vozidla viditelná při přiblížení (štítky), cachuje se podle spoje
+  // a stahování je omezené kvůli limitu API klíče.
+  const SHAPE_CONCURRENCY = 2;
+  const SHAPE_BUDGET_PER_POLL = 8;
+  const SHAPE_MAX_OFFSET = 60; // m — dál od trasy už polohu na trasu nepřichytáváme
+  /** @type {Map<string, object|"pending"|"none">} */
+  const shapes = new Map();
+  const shapeQueue = [];
+  let shapeInflight = 0;
+  let shapeBudget = SHAPE_BUDGET_PER_POLL;
+
+  const M_PER_DEG_LAT = 110540;
+  function toXY(lat, lng, kx) { return [lng * kx, lat * M_PER_DEG_LAT]; }
+
+  function buildShape(features) {
+    const coords = (features || []).map((f) => f.geometry?.coordinates).filter((c) => Array.isArray(c) && c.length >= 2);
+    if (coords.length < 2) return null;
+    const kx = 111320 * Math.cos((coords[0][1] * Math.PI) / 180);
+    const xy = coords.map(([lng, lat]) => toXY(lat, lng, kx));
+    const cum = [0];
+    for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]));
+    return { coords, xy, cum, kx };
+  }
+
+  /** nejbližší bod trasy: vzdálenost od začátku trasy (d) a od trasy (off), v metrech */
+  function project(sh, latlng) {
+    const [px, py] = toXY(latlng.lat, latlng.lng, sh.kx);
+    let best = { d: 0, off: Infinity };
+    for (let i = 1; i < sh.xy.length; i++) {
+      const [ax, ay] = sh.xy[i - 1], [bx, by] = sh.xy[i];
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+      const off = Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+      if (off < best.off) best = { d: sh.cum[i - 1] + (sh.cum[i] - sh.cum[i - 1]) * t, off };
+    }
+    return best;
+  }
+
+  function pointAt(sh, d) {
+    const c = sh.cum;
+    let lo = 0, hi = c.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (c[mid] <= d) lo = mid; else hi = mid; }
+    const seg = c[hi] - c[lo];
+    const t = seg ? Math.max(0, Math.min(1, (d - c[lo]) / seg)) : 0;
+    const [aLng, aLat] = sh.coords[lo], [bLng, bLat] = sh.coords[hi];
+    return L.latLng(aLat + (bLat - aLat) * t, aLng + (bLng - aLng) * t);
+  }
+
+  function requestShape(v) {
+    const trip = v.props.gtfs_trip_id;
+    if (!trip || shapes.has(trip)) return;
+    if (shapes.size > 600) for (const [k, s] of shapes) if (s !== "pending") shapes.delete(k);
+    shapes.set(trip, "pending");
+    shapeQueue.push({ trip, vehicleId: v.id });
+    pumpShapes();
+  }
+
+  function pumpShapes() {
+    while (shapeInflight < SHAPE_CONCURRENCY && shapeBudget > 0 && shapeQueue.length) {
+      const { trip, vehicleId } = shapeQueue.shift();
+      const v = vehicles.get(vehicleId);
+      // vozidlo mezitím zmizelo z výřezu → trasu teď nepotřebujeme
+      if (!v || v.mode !== "label") { shapes.delete(trip); continue; }
+      shapeInflight++;
+      shapeBudget--;
+      const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, CFG.apiBase);
+      url.searchParams.append("scopes", "shapes");
+      const key = getKey();
+      fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((data) => shapes.set(trip, buildShape(data?.shapes?.features) || "none"))
+        .catch((status) => { if (status === 429) shapes.delete(trip); else shapes.set(trip, "none"); })
+        .finally(() => { shapeInflight--; pumpShapes(); });
+    }
+  }
+
   function upsert(feature, now) {
     const g = feature.geometry;
     const p = feature.properties || {};
@@ -436,7 +514,8 @@
     if (!v) {
       const dot = L.circleMarker(latlng, { renderer: dotRenderer, radius: dotRadius(), fillOpacity: 1, ...dotStyle(p) })
         .on("click", () => openCard(id));
-      v = { id, props: p, pos: latlng, from: latlng, to: latlng, t0: now, dur: 0, dot, label: null, iconKey: "", mode: null };
+      v = { id, props: p, pos: latlng, raw: latlng, from: latlng, to: latlng, path: null, t0: now, dur: 0,
+        lastChange: 0, interval: 0, dot, label: null, iconKey: "", mode: null };
       vehicles.set(id, v);
       sync(v);
       return id;
@@ -450,18 +529,39 @@
       if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
     }
 
-    // animuj jen to, co je vidět; ostatní rovnou přesuň
-    const animate = map.getZoom() >= ANIM_ZOOM && v.mode !== null &&
-      (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
-    if (animate && !v.pos.equals(latlng)) {
-      v.from = v.pos;
-      v.to = latlng;
-      v.t0 = now;
-      v.dur = POLL_MS;
-      moving.add(id);
-    } else {
-      moving.delete(id);
-      setPos(v, latlng);
+    // Poloha se nezměnila = vozidlo zatím neposlalo novou polohu (nebo stojí). Rozjetou animaci necháme doběhnout.
+    const changed = !v.raw.equals(latlng);
+    if (changed) {
+      // jak často tohle vozidlo reálně hlásí polohu (klouzavý průměr, dlouhé stání nepočítáme)
+      const gap = v.lastChange ? now - v.lastChange : 0;
+      // (kratší mezery než interval stahování jsou jen extra načtení po posunu mapy → ignorovat)
+      if (gap >= POLL_MS * 0.8 && gap < 45000) v.interval = v.interval ? 0.5 * v.interval + 0.5 * gap : gap;
+      v.lastChange = now;
+      v.raw = latlng;
+
+      const animate = map.getZoom() >= ANIM_ZOOM && v.mode !== null &&
+        (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
+      if (animate) {
+        v.from = v.pos;
+        v.to = latlng;
+        v.t0 = now;
+        // animace trvá tak dlouho, jak často vozidlo hlásí polohu → plynule navazuje na další hlášení
+        // (+15 %, aby další poloha přišla ještě během pohybu a vozidlo se nezastavovalo)
+        v.dur = Math.max(POLL_MS, Math.min(30000, (v.interval || POLL_MS * 1.5) * 1.15));
+        v.path = null;
+        const sh = shapes.get(p.gtfs_trip_id);
+        if (sh && typeof sh === "object") {
+          const a = project(sh, v.from), b = project(sh, latlng);
+          if (a.off < SHAPE_MAX_OFFSET && b.off < SHAPE_MAX_OFFSET && b.d >= a.d - 5 && b.d - a.d < SNAP_METERS) {
+            v.path = { sh, d0: a.d, d1: b.d };
+          }
+        }
+        moving.add(id);
+      } else {
+        moving.delete(id);
+        v.path = null;
+        setPos(v, latlng);
+      }
     }
     sync(v);
 
@@ -469,32 +569,30 @@
     return id;
   }
 
-  // plynulý přesun mezi dvěma polohami (lineární interpolace), smyčka běží jen když se něco hýbe
+  // plynulý pohyb: po trase spoje, pokud ji známe, jinak přímo; smyčka běží jen když se něco hýbe
   let rafId = 0;
-  let lastFrame = 0;
   function startAnimation() {
     if (!rafId && moving.size) rafId = requestAnimationFrame(animate);
   }
+  function positionAt(v, t) {
+    if (v.path) return pointAt(v.path.sh, v.path.d0 + (v.path.d1 - v.path.d0) * t);
+    if (t >= 1) return v.to;
+    return L.latLng(v.from.lat + (v.to.lat - v.from.lat) * t, v.from.lng + (v.to.lng - v.from.lng) * t);
+  }
   function animate(now) {
     rafId = 0;
-    if (now - lastFrame >= FRAME_MS) {
-      lastFrame = now;
-      for (const id of moving) {
-        const v = vehicles.get(id);
-        if (!v) { moving.delete(id); continue; }
-        const t = Math.min(1, (now - v.t0) / v.dur);
-        setPos(v, t >= 1 ? v.to : L.latLng(
-          v.from.lat + (v.to.lat - v.from.lat) * t,
-          v.from.lng + (v.to.lng - v.from.lng) * t,
-        ));
-        if (t >= 1) moving.delete(id);
-      }
+    for (const id of moving) {
+      const v = vehicles.get(id);
+      if (!v) { moving.delete(id); continue; }
+      const t = Math.min(1, (now - v.t0) / v.dur);
+      setPos(v, positionAt(v, t));
+      if (t >= 1) moving.delete(id);
     }
     startAnimation();
   }
 
   function finishAnimations() {
-    for (const id of moving) { const v = vehicles.get(id); if (v) setPos(v, v.to); }
+    for (const id of moving) { const v = vehicles.get(id); if (v) setPos(v, positionAt(v, 1)); }
     moving.clear();
   }
 
@@ -549,6 +647,8 @@
       for (const [id, v] of vehicles) {
         if (!seen.has(id) && openId !== id) removeVehicle(v);
       }
+      shapeBudget = SHAPE_BUDGET_PER_POLL;
+      pumpShapes();
       lastOk = new Date();
       updateCount();
       startAnimation();
