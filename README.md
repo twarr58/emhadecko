@@ -18,7 +18,9 @@ Golemio vyžaduje [API klíč zdarma](https://api.golemio.cz/api-keys) (`X-Acces
 Návštěvník ho zadá při prvním otevření stránky a klíč zůstane jen v jeho prohlížeči
 (`localStorage`). Změnit ho jde tlačítkem „Změnit API klíč“.
 
-`web/config.js` umí i pole `apiKey`, ale cokoli do něj dáš, bude na GitHub Pages veřejně čitelné.
+Pokud je v repu nastavený secret **`GOLEMIO_API_KEY`** (Settings → Secrets and variables → Actions),
+workflow ho při deployi vloží do `web/config.js` a stránka funguje všem bez zadávání klíče.
+Klíč je tím ale **veřejně čitelný** ve zdrojáku stránky a všichni návštěvníci sdílí jeho rate limit.
 
 ## Nasazení na GitHub Pages
 
