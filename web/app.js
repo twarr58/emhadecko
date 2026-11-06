@@ -36,7 +36,7 @@
   };
 
   // ---------- mapa ----------
-  const map = L.map("map", { zoomControl: true, preferCanvas: false }).setView([50.0835, 14.4341], 13);
+  const map = L.map("map", { zoomControl: true }).setView([50.0835, 14.4341], 13);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · data <a href="https://golemio.cz">Golemio</a> / PID',
@@ -103,8 +103,23 @@
   $changeKey.addEventListener("click", async () => { await askKey(); refresh(); });
 
   // ---------- vozidla ----------
-  /** @type {Map<string, {marker: L.Marker, props: object, from: L.LatLng, to: L.LatLng, t0: number, dur: number, iconKey: string}>} */
+  // Výkon: při oddálení se vozidla kreslí jako tečky na jednom canvasu (levné i pro tisíce kusů),
+  // HTML štítky s číslem linky jen při přiblížení a jen pro vozidla ve výřezu.
+  const LABEL_ZOOM = 14; // od tohoto zoomu štítky s číslem linky
+  const ANIM_ZOOM = 12; // pod tímto zoomem se pohyb neanimuje (není vidět), jen se přepíše poloha
+  const FRAME_MS = 33; // animace max ~30 fps
+
+  const dotRenderer = L.canvas({ padding: 0.3, tolerance: 6 });
+
+  /**
+   * @typedef {{id: string, props: object, pos: L.LatLng, from: L.LatLng, to: L.LatLng, t0: number, dur: number,
+   *            dot: L.CircleMarker, label: L.Marker|null, iconKey: string, mode: null|"dot"|"label"}} Vehicle
+   * @type {Map<string, Vehicle>}
+   */
   const vehicles = new Map();
+  let lastOk = null;
+  const moving = new Set();
+  let viewBounds = map.getBounds().pad(0.1);
 
   function visible(p) {
     if (!enabledTypes.has(p.route_type)) return false;
@@ -112,26 +127,27 @@
     return true;
   }
 
-  function applyFilter() {
-    for (const v of vehicles.values()) {
-      const show = visible(v.props);
-      const on = map.hasLayer(v.marker);
-      if (show && !on) v.marker.addTo(map);
-      else if (!show && on) v.marker.remove();
-    }
-    updateCount();
-  }
-
   function colorFor(p) {
     if (p.route_type === "metro" && METRO_COLORS[p.gtfs_route_short_name]) return METRO_COLORS[p.gtfs_route_short_name];
     return COLORS[p.route_type] || "#555";
+  }
+
+  function dotRadius() {
+    const z = map.getZoom();
+    return z < 10 ? 3 : z < 12 ? 4 : 5;
+  }
+
+  function dotStyle(p) {
+    const late = (p.delay ?? 0) >= 180;
+    return { fillColor: colorFor(p), color: late ? "#ffb000" : "#fff", weight: late ? 2 : 1 };
   }
 
   function iconFor(p) {
     const color = colorFor(p);
     const late = (p.delay ?? 0) >= 180;
     const hasBearing = typeof p.bearing === "number";
-    const key = `${p.gtfs_route_short_name}|${color}|${late}|${hasBearing ? Math.round(p.bearing / 5) * 5 : "-"}`;
+    const bearing = hasBearing ? Math.round(p.bearing / 5) * 5 : null;
+    const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}`;
 
     const root = document.createElement("div");
     root.className = "veh" + (late ? " late" : "");
@@ -139,7 +155,7 @@
       const a = document.createElement("div");
       a.className = "arrow";
       a.style.color = color;
-      a.style.transform = `rotate(${Math.round(p.bearing / 5) * 5}deg)`;
+      a.style.transform = `rotate(${bearing}deg)`;
       root.append(a);
     }
     const b = document.createElement("div");
@@ -149,6 +165,69 @@
     root.append(b);
 
     return { key, icon: L.divIcon({ html: root, className: "", iconSize: [0, 0] }) };
+  }
+
+  function desiredMode(v) {
+    if (!visible(v.props)) return null;
+    return map.getZoom() >= LABEL_ZOOM && viewBounds.contains(v.pos) ? "label" : "dot";
+  }
+
+  /** přepne vozidlo mezi tečkou / štítkem / skrytím podle zoomu, výřezu a filtrů */
+  function sync(v) {
+    const mode = desiredMode(v);
+    if (mode === v.mode) return;
+    if (v.mode === "dot") v.dot.remove();
+    if (v.mode === "label") v.label.remove();
+    if (mode === "dot") v.dot.setLatLng(v.pos).addTo(map);
+    if (mode === "label") {
+      if (!v.label) {
+        const { key, icon } = iconFor(v.props);
+        v.label = L.marker(v.pos, { icon, keyboard: false }).on("click", () => openCard(v.id));
+        v.iconKey = key;
+      }
+      v.label.setLatLng(v.pos).addTo(map);
+    }
+    v.mode = mode;
+  }
+
+  function syncAll() {
+    viewBounds = map.getBounds().pad(0.1);
+    for (const v of vehicles.values()) sync(v);
+    updateCount();
+  }
+
+  function applyFilter() { syncAll(); }
+
+  function setPos(v, latlng) {
+    v.pos = latlng;
+    if (v.mode === "dot") v.dot.setLatLng(latlng);
+    else if (v.mode === "label") v.label.setLatLng(latlng);
+    if (openId === v.id) card.setLatLng(latlng);
+  }
+
+  function removeVehicle(v) {
+    v.dot.remove();
+    v.label?.remove();
+    vehicles.delete(v.id);
+    moving.delete(v.id);
+    details.delete(v.id);
+  }
+
+  // ---------- sdílená karta vozidla (jeden popup pro všechna vozidla) ----------
+  const card = L.popup({ className: "veh-popup", maxWidth: 320, minWidth: 300, autoPanPadding: [20, 20] });
+  let openId = null;
+  card.on("remove", () => { openId = null; });
+
+  function openCard(id) {
+    const v = vehicles.get(id);
+    if (!v) return;
+    openId = id;
+    card.setLatLng(v.pos).setContent(renderCard(id)).openOn(map);
+    loadDetail(id);
+  }
+
+  function refreshCard(id) {
+    if (openId === id && map.hasLayer(card)) card.setContent(renderCard(id));
   }
 
   // ---------- karta vozidla (popup) ----------
@@ -218,8 +297,7 @@
       d.error = e.message;
     } finally {
       d.loading = false;
-      const cur = vehicles.get(id);
-      if (cur && cur.marker.isPopupOpen()) cur.marker.setPopupContent(renderCard(id));
+      refreshCard(id);
     }
   }
 
@@ -328,56 +406,73 @@
 
     let v = vehicles.get(id);
     if (!v) {
-      const { key, icon } = iconFor(p);
-      const marker = L.marker(latlng, { icon, keyboard: false });
-      marker.bindPopup(() => renderCard(id), { className: "veh-popup", maxWidth: 320, minWidth: 300, autoPanPadding: [20, 20] });
-      marker.on("popupopen", () => loadDetail(id));
-      v = { marker, props: p, from: latlng, to: latlng, t0: now, dur: 0, iconKey: key };
+      const dot = L.circleMarker(latlng, { renderer: dotRenderer, radius: dotRadius(), fillOpacity: 1, ...dotStyle(p) })
+        .on("click", () => openCard(id));
+      v = { id, props: p, pos: latlng, from: latlng, to: latlng, t0: now, dur: 0, dot, label: null, iconKey: "", mode: null };
       vehicles.set(id, v);
-      if (visible(p)) marker.addTo(map);
+      sync(v);
       return id;
     }
 
-    const cur = v.marker.getLatLng();
+    const prev = v.props;
     v.props = p;
-    v.from = cur;
-    v.to = latlng;
-    v.t0 = now;
-    v.dur = cur.distanceTo(latlng) > SNAP_METERS ? 0 : POLL_MS;
-
-    const { key, icon } = iconFor(p);
-    if (key !== v.iconKey) { v.marker.setIcon(icon); v.iconKey = key; }
-    if (v.marker.isPopupOpen()) {
-      v.marker.setPopupContent(renderCard(id));
-      loadDetail(id); // obnov i zastávky/časy otevřeného vozidla
+    if (colorFor(prev) !== colorFor(p) || (prev.delay ?? 0) >= 180 !== (p.delay ?? 0) >= 180) v.dot.setStyle(dotStyle(p));
+    if (v.label) {
+      const { key, icon } = iconFor(p);
+      if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
     }
 
-    const show = visible(p), on = map.hasLayer(v.marker);
-    if (show && !on) v.marker.addTo(map);
-    else if (!show && on) v.marker.remove();
+    // animuj jen to, co je vidět; ostatní rovnou přesuň
+    const animate = map.getZoom() >= ANIM_ZOOM && v.mode !== null &&
+      (viewBounds.contains(v.pos) || viewBounds.contains(latlng)) && v.pos.distanceTo(latlng) <= SNAP_METERS;
+    if (animate && !v.pos.equals(latlng)) {
+      v.from = v.pos;
+      v.to = latlng;
+      v.t0 = now;
+      v.dur = POLL_MS;
+      moving.add(id);
+    } else {
+      moving.delete(id);
+      setPos(v, latlng);
+    }
+    sync(v);
+
+    if (openId === id) { refreshCard(id); loadDetail(id); }
     return id;
   }
 
-  // plynulý přesun mezi dvěma polohami (lineární interpolace)
+  // plynulý přesun mezi dvěma polohami (lineární interpolace), smyčka běží jen když se něco hýbe
+  let rafId = 0;
+  let lastFrame = 0;
+  function startAnimation() {
+    if (!rafId && moving.size) rafId = requestAnimationFrame(animate);
+  }
   function animate(now) {
-    for (const v of vehicles.values()) {
-      if (v.from === v.to) continue;
-      const t = v.dur ? Math.min(1, (now - v.t0) / v.dur) : 1;
-      if (map.hasLayer(v.marker)) {
-        v.marker.setLatLng([
+    rafId = 0;
+    if (now - lastFrame >= FRAME_MS) {
+      lastFrame = now;
+      for (const id of moving) {
+        const v = vehicles.get(id);
+        if (!v) { moving.delete(id); continue; }
+        const t = Math.min(1, (now - v.t0) / v.dur);
+        setPos(v, t >= 1 ? v.to : L.latLng(
           v.from.lat + (v.to.lat - v.from.lat) * t,
           v.from.lng + (v.to.lng - v.from.lng) * t,
-        ]);
+        ));
+        if (t >= 1) moving.delete(id);
       }
-      if (t >= 1) { v.from = v.to; v.marker.setLatLng(v.to); }
     }
-    requestAnimationFrame(animate);
+    startAnimation();
   }
-  requestAnimationFrame(animate);
 
-  function updateCount(extra = "") {
+  function finishAnimations() {
+    for (const id of moving) { const v = vehicles.get(id); if (v) setPos(v, v.to); }
+    moving.clear();
+  }
+
+  function updateCount(extra = lastOk ? ` · ${lastOk.toLocaleTimeString("cs-CZ")}` : "") {
     let shown = 0;
-    for (const v of vehicles.values()) if (map.hasLayer(v.marker)) shown++;
+    for (const v of vehicles.values()) if (v.mode) shown++;
     setStatus(`${shown} / ${vehicles.size} vozidel${extra}`);
   }
 
@@ -390,7 +485,6 @@
   }
 
   let inflight = null;
-  let lastOk = null;
 
   async function fetchPositions() {
     const url = new URL("/v2/public/vehiclepositions", CFG.apiBase);
@@ -425,10 +519,11 @@
         if (id) seen.add(id);
       }
       for (const [id, v] of vehicles) {
-        if (!seen.has(id) && !v.marker.isPopupOpen()) { v.marker.remove(); vehicles.delete(id); details.delete(id); }
+        if (!seen.has(id) && openId !== id) removeVehicle(v);
       }
       lastOk = new Date();
-      updateCount(` · ${lastOk.toLocaleTimeString("cs-CZ")}`);
+      updateCount();
+      startAnimation();
     } catch (e) {
       if (e.name !== "AbortError") {
         console.error(e);
@@ -445,8 +540,15 @@
     if (!document.hidden) timer = setTimeout(refresh, POLL_MS);
   }
 
+  map.on("zoomend", () => {
+    if (map.getZoom() < ANIM_ZOOM) finishAnimations();
+    const r = dotRadius();
+    for (const v of vehicles.values()) if (v.dot.options.radius !== r) v.dot.setRadius(r);
+  });
+
   let moveTimer = null;
   map.on("moveend", () => {
+    syncAll();
     clearTimeout(moveTimer);
     moveTimer = setTimeout(refresh, 400);
   });
