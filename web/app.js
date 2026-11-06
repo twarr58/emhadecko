@@ -122,7 +122,14 @@
   const moving = new Set();
   let viewBounds = map.getBounds().pad(0.1);
 
+  // vozidla přestupních spojů otevřené karty: na mapě vždy vidět (i přes filtr) a zvýrazněná
+  let xferTrips = new Set();
+  // málo viditelných vozidel (typicky vybraná linka) → štítky i při oddálení, ať nezapadnou
+  const FEW_LIMIT = 60;
+  let fewMode = false;
+
   function visible(p) {
+    if (xferTrips.has(p.gtfs_trip_id)) return true;
     if (!enabledTypes.has(p.route_type)) return false;
     if (lineFilter && !lineFilter.has(String(p.gtfs_route_short_name).toUpperCase())) return false;
     return true;
@@ -148,10 +155,11 @@
     const late = (p.delay ?? 0) >= 180;
     const hasBearing = typeof p.bearing === "number";
     const bearing = hasBearing ? Math.round(p.bearing / 5) * 5 : null;
-    const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}`;
+    const xfer = xferTrips.has(p.gtfs_trip_id);
+    const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}|${xfer}`;
 
     const root = document.createElement("div");
-    root.className = "veh" + (late ? " late" : "");
+    root.className = "veh" + (late ? " late" : "") + (xfer ? " xfer" : "");
     if (hasBearing) {
       const a = document.createElement("div");
       a.className = "arrow";
@@ -170,7 +178,15 @@
 
   function desiredMode(v) {
     if (!visible(v.props)) return null;
-    return map.getZoom() >= LABEL_ZOOM && viewBounds.contains(v.pos) ? "label" : "dot";
+    if (!viewBounds.contains(v.pos)) return "dot";
+    const big = map.getZoom() >= LABEL_ZOOM || fewMode || v.id === openId || xferTrips.has(v.props.gtfs_trip_id);
+    return big ? "label" : "dot";
+  }
+
+  function computeFewMode() {
+    let n = 0;
+    for (const v of vehicles.values()) if (visible(v.props) && ++n > FEW_LIMIT) return false;
+    return n > 0;
   }
 
   /** přepne vozidlo mezi tečkou / štítkem / skrytím podle zoomu, výřezu a filtrů */
@@ -194,8 +210,23 @@
 
   function syncAll() {
     viewBounds = map.getBounds().pad(0.1);
-    for (const v of vehicles.values()) sync(v);
+    fewMode = computeFewMode();
+    for (const v of vehicles.values()) {
+      if (v.label) {
+        const { key, icon } = iconFor(v.props);
+        if (key !== v.iconKey) { v.label.setIcon(icon); v.iconKey = key; }
+      }
+      sync(v);
+    }
     updateCount();
+  }
+
+  /** nastaví přestupní spoje otevřené karty (zvýraznění na mapě) */
+  function setXferTrips(ids) {
+    const next = new Set(ids);
+    if (next.size === xferTrips.size && [...next].every((x) => xferTrips.has(x))) return;
+    xferTrips = next;
+    syncAll();
   }
 
   function applyFilter() { syncAll(); }
@@ -224,7 +255,14 @@
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
-    if (openId !== id) { showAllStops = false; stopView = null; transferSeq = null; clearTrip(); }
+    if (openId !== id) {
+      showAllStops = false; stopView = null; transferSeq = null; clearTrip();
+      const prev = vehicles.get(openId);
+      openId = id;
+      setXferTrips([]);
+      if (prev) sync(prev);
+      sync(v); // vybrané vozidlo vždy jako štítek
+    }
     if (!$alerts.hidden) closeAlerts();
     openId = id;
     $card.hidden = false;
@@ -255,9 +293,12 @@
   }
 
   function closeCard() {
+    const prev = vehicles.get(openId);
     openId = null;
     stopView = null;
     clearTrip();
+    setXferTrips([]);
+    if (prev) sync(prev);
     $card.hidden = true;
     $card.replaceChildren();
     selRing.remove();
@@ -478,7 +519,8 @@
     const trip = v.props.gtfs_trip_id;
     const info = d.info || d;
     const sh = shapes.get(trip);
-    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${typeof sh === "object"}`;
+    const xferSeq = stopView ? null : transferContext(id)?.stop.stop_sequence;
+    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${xferSeq}|${typeof sh === "object"}`;
     if (key === tripKey) {
       nextStopMarker?.getTooltip()?.update();
       return;
@@ -498,7 +540,7 @@
       const [lng, lat] = f.geometry.coordinates;
       const passed = seq < last || (seq === last && !atStop);
       const isNext = atStop ? seq === last : seq === nextSeq(id);
-      const sel = stopView?.seq === seq;
+      const sel = stopView?.seq === seq || xferSeq === seq;
       const m = L.circleMarker([lat, lng], {
         pane: "tripStops", radius: sel ? 8 : isNext ? 7 : 5, weight: sel ? 4 : isNext ? 3 : 2.5,
         color: passed ? "#9ca3af" : color, fillColor: isNext ? color : "#fff", fillOpacity: 1,
@@ -758,6 +800,7 @@
           h("span", { class: "dl", style: `background:${c}` }, dep.route?.short_name),
           h("span", { class: "dh" },
             dep.trip?.headsign,
+            veh ? h("span", { class: "onmap", title: "Vozidlo je na mapě (čárkovaný rámeček)" }, " ◉") : null,
             dep.trip?.is_wheelchair_accessible ? h("span", { class: "acc", title: "bezbariérové" }, " ♿") : null,
             dep.trip?.is_guaranteed_transfer ? h("span", { class: "tag ok", title: "Garantovaný přestup: spoj počká" }, "počká") : null,
             dep.stop?.platform_code ? h("small", { class: "pl" }, ` · nást. ${dep.stop.platform_code}`) : null,
@@ -770,6 +813,8 @@
       }));
     }
     const notes = (data?.infotexts || []).map((it) => h("div", { class: "tr-info" }, "ℹ ", it.text?.cs || ""));
+    const tripIds = (data?.departures || []).map((dep) => dep.trip?.id).filter(Boolean);
+    queueMicrotask(() => { if (openId === id && !stopView) setXferTrips(tripIds); });
     return h("section", { class: "vc-tr" }, head, chips, ...notes, list);
   }
 
@@ -965,7 +1010,7 @@
         v.t0 = now;
         // animace trvá tak dlouho, jak často vozidlo hlásí polohu → plynule navazuje na další hlášení
         // (+15 %, aby další poloha přišla ještě během pohybu a vozidlo se nezastavovalo)
-        v.dur = Math.max(POLL_MS, Math.min(30000, (v.interval || POLL_MS * 1.5) * 1.15));
+        v.dur = Math.max(currentPollMs(), Math.min(35000, (v.interval || currentPollMs() * 1.5) * 1.15));
         v.path = null;
         const sh = shapes.get(p.gtfs_trip_id);
         if (sh && typeof sh === "object") {
@@ -1017,7 +1062,7 @@
   function updateCount(extra = lastOk ? ` · ${lastOk.toLocaleTimeString("cs-CZ")}` : "") {
     let shown = 0;
     for (const v of vehicles.values()) if (v.mode) shown++;
-    setStatus(`${shown} / ${vehicles.size} vozidel${extra}`);
+    setStatus(`${shown} / ${vehicles.size} vozidel${extra}${pollNote()}`);
   }
 
   // ---------- výluky a mimořádnosti (RSS pid.cz → alerts.json, generuje workflow) ----------
@@ -1178,6 +1223,7 @@
       }
       shapeBudget = SHAPE_BUDGET_PER_POLL;
       pumpShapes();
+      if (computeFewMode() !== fewMode) syncAll();
       lastOk = new Date();
       updateCount();
       startAnimation();
@@ -1191,10 +1237,61 @@
     }
   }
 
+  // ---------- šetření požadavků: nečinnost a oddálená mapa ----------
+  // Nejvíc požadavků dělají zapomenuté otevřené záložky, ne lidé, co se dívají.
+  const IDLE_SLOW_MS = 10 * 60_000; // po 10 min bez aktivity stahovat jen každých 30 s
+  const IDLE_PAUSE_MS = 60 * 60_000; // po hodině bez aktivity stahování pozastavit
+  const IDLE_POLL_MS = 30_000;
+  const FAR_ZOOM = 12; // při oddálení (celý kraj) stačí obnova à 20 s, pohyb tam není vidět
+  const FAR_POLL_MS = 20_000;
+  let lastActivity = Date.now();
+  let paused = false;
+  const $paused = document.getElementById("paused");
+
+  function currentPollMs() {
+    if (Date.now() - lastActivity >= IDLE_SLOW_MS) return Math.max(POLL_MS, IDLE_POLL_MS);
+    if (map.getZoom() < FAR_ZOOM) return Math.max(POLL_MS, FAR_POLL_MS);
+    return POLL_MS;
+  }
+
+  function pollNote() {
+    if (paused) return "";
+    if (Date.now() - lastActivity >= IDLE_SLOW_MS) return " · úsporný režim";
+    return "";
+  }
+
+  function activity() {
+    const wasSlow = Date.now() - lastActivity >= IDLE_SLOW_MS;
+    lastActivity = Date.now();
+    if (paused) {
+      paused = false;
+      $paused.hidden = true;
+      refresh();
+    } else if (wasSlow) {
+      refresh(); // z úsporného režimu hned zpátky na normální obnovu
+    }
+  }
+  let lastMoveEvent = 0;
+  for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+    document.addEventListener(ev, activity, { passive: true, capture: true });
+  }
+  document.addEventListener("pointermove", () => {
+    const now = Date.now();
+    if (now - lastMoveEvent > 5000) { lastMoveEvent = now; activity(); }
+  }, { passive: true });
+
   let timer = null;
   function schedule() {
     clearTimeout(timer);
-    if (!document.hidden) timer = setTimeout(refresh, POLL_MS);
+    if (document.hidden) return;
+    if (Date.now() - lastActivity >= IDLE_PAUSE_MS) {
+      paused = true;
+      $paused.hidden = false;
+      finishAnimations();
+      setStatus("Pozastaveno kvůli nečinnosti");
+      return;
+    }
+    timer = setTimeout(refresh, currentPollMs());
   }
 
   map.on("zoomend", () => {
@@ -1211,7 +1308,7 @@
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) clearTimeout(timer);
-    else refresh();
+    else activity(), refresh();
   });
 
   refresh();
