@@ -31,20 +31,29 @@ jobs:
       - name: Fetch PID alerts
         run: python3 scripts/fetch_alerts.py web/alerts.json || echo '{"items":[],"errors":["fetch failed"]}' > web/alerts.json
 
-      # Secret GOLEMIO_API_KEY se vloží do config.js, aby návštěvníci nemuseli
-      # zadávat vlastní klíč. Klíč je tím veřejně čitelný ve zdrojáku stránky
-      # (vědomě schválené vlastníkem repa).
-      - name: Configure API key
+      # Konfigurace API pro stránku:
+      #  - repo proměnná WORKER_URL (Settings → Variables) → stránka volá Cloudflare Worker
+      #    (worker/), klíč drží Worker a do stránky se NEdostane,
+      #  - jinak se vloží secret GOLEMIO_API_KEY (veřejně čitelný, přechodné řešení),
+      #  - jinak si návštěvník zadá vlastní klíč.
+      - name: Configure API
         env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
           GOLEMIO_API_KEY: ${{ secrets.GOLEMIO_API_KEY }}
         run: |
-          if [ -z "$GOLEMIO_API_KEY" ]; then
-            echo "GOLEMIO_API_KEY not set, visitors will enter their own key"
-            exit 0
+          if [ -n "$WORKER_URL" ]; then
+            jq -n --arg u "$WORKER_URL" -r \
+              '"window.EMHADECKO_CONFIG = " + ({apiBase: $u, proxy: true, pollSeconds: 10} | tojson) + ";"' \
+              > web/config.js
+            echo "Using Cloudflare Worker: $WORKER_URL"
+          elif [ -n "$GOLEMIO_API_KEY" ]; then
+            jq -n --arg k "$GOLEMIO_API_KEY" -r \
+              '"window.EMHADECKO_CONFIG = " + ({apiBase: "https://api.golemio.cz", apiKey: $k, pollSeconds: 10} | tojson) + ";"' \
+              > web/config.js
+            echo "::warning::API key is embedded in the public page; set WORKER_URL to use the Cloudflare Worker"
+          else
+            echo "No WORKER_URL or GOLEMIO_API_KEY, visitors will enter their own key"
           fi
-          jq -n --arg k "$GOLEMIO_API_KEY" -r \
-            '"window.EMHADECKO_CONFIG = " + ({apiBase: "https://api.golemio.cz", apiKey: $k, pollSeconds: 10} | tojson) + ";"' \
-            > web/config.js
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

@@ -7,7 +7,7 @@
   "use strict";
 
   const CFG = Object.assign(
-    { apiBase: "https://api.golemio.cz", apiKey: "", pollSeconds: 10 },
+    { apiBase: "https://api.golemio.cz", apiKey: "", proxy: false, pollSeconds: 10 },
     window.EMHADECKO_CONFIG || {},
   );
   const POLL_MS = Math.max(5, CFG.pollSeconds) * 1000;
@@ -85,7 +85,8 @@
 
   // ---------- API klíč ----------
   // vlastní klíč uživatele má přednost před klíčem vloženým při buildu
-  function getKey() { return store.get(KEY_STORAGE) || CFG.apiKey || null; }
+  // v režimu proxy (Cloudflare Worker) klíč doplňuje server, prohlížeč žádný nemá ani neposílá
+  function getKey() { return CFG.proxy ? null : store.get(KEY_STORAGE) || CFG.apiKey || null; }
 
   function askKey() {
     return new Promise((resolve) => {
@@ -100,7 +101,7 @@
     });
   }
 
-  $changeKey.hidden = false;
+  $changeKey.hidden = !!CFG.proxy;
   $changeKey.addEventListener("click", async () => { await askKey(); refresh(); });
 
   // ---------- vozidla ----------
@@ -1008,8 +1009,12 @@
   function bboxParam() {
     const b = map.getBounds().pad(0.2);
     const f = (n) => n.toFixed(5);
+    // oříznutí na oblast PID a okolí (Worker jiný výřez odmítne a stejně tam nic nejezdí)
+    const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+    const north = clamp(b.getNorth(), 48, 52), south = clamp(b.getSouth(), 48, 52);
+    const west = clamp(b.getWest(), 11, 20), east = clamp(b.getEast(), 11, 20);
     // formát: topLeft.lat,topLeft.lon,bottomRight.lat,bottomRight.lon
-    return [f(b.getNorth()), f(b.getWest()), f(b.getSouth()), f(b.getEast())].join(",");
+    return [f(north), f(west), f(south), f(east)].join(",");
   }
 
   let inflight = null;
@@ -1018,15 +1023,17 @@
     const url = new URL("/v2/public/vehiclepositions", CFG.apiBase);
     url.searchParams.set("boundingBox", bboxParam());
     const headers = { Accept: "application/json" };
-    let key = getKey();
-    if (!key) key = await askKey();
-    if (!key) throw new Error("Chybí API klíč.");
-    headers["X-Access-Token"] = key;
+    if (!CFG.proxy) {
+      let key = getKey();
+      if (!key) key = await askKey();
+      if (!key) throw new Error("Chybí API klíč.");
+      headers["X-Access-Token"] = key;
+    }
 
     inflight?.abort();
     inflight = new AbortController();
     const res = await fetch(url, { headers, signal: inflight.signal, cache: "no-store" });
-    if (res.status === 401 || res.status === 403) {
+    if (!CFG.proxy && (res.status === 401 || res.status === 403)) {
       setStatus("Neplatný API klíč.", true);
       await askKey();
       throw new Error(`HTTP ${res.status}: neautorizováno`);

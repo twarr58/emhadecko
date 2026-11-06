@@ -7,7 +7,7 @@ export default {
       'always',
       ['build', 'chore', 'ci', 'docs', 'feat', 'fix', 'perf', 'refactor', 'revert', 'style', 'test', 'deps'],
     ],
-    'scope-enum': [1, 'always', ['web', 'ci', 'deps', 'docs']],
+    'scope-enum': [1, 'always', ['web', 'worker', 'ci', 'deps', 'docs']],
     'body-max-line-length': [0],
     'footer-max-line-length': [0],
     // Allow sentence-case (capitalized first word) and lowercase.

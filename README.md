@@ -26,13 +26,40 @@ python3 scripts/fetch_alerts.py web/alerts.json
 
 ## API klíč
 
-Golemio vyžaduje [API klíč zdarma](https://api.golemio.cz/api-keys) (`X-Access-Token`).
-Návštěvník ho zadá při prvním otevření stránky a klíč zůstane jen v jeho prohlížeči
-(`localStorage`). Změnit ho jde tlačítkem „Změnit API klíč“.
+Golemio vyžaduje [API klíč zdarma](https://api.golemio.cz/api-keys) (`X-Access-Token`). Stránka umí tři režimy
+(vybírá je workflow `pages.yml` při deployi):
 
-Pokud je v repu nastavený secret **`GOLEMIO_API_KEY`** (Settings → Secrets and variables → Actions),
-workflow ho při deployi vloží do `web/config.js` a stránka funguje všem bez zadávání klíče.
-Klíč je tím ale **veřejně čitelný** ve zdrojáku stránky a všichni návštěvníci sdílí jeho rate limit.
+| Režim | Nastavení | Klíč |
+|---|---|---|
+| **Cloudflare Worker** (doporučeno) | repo proměnná `WORKER_URL` | jen ve Workeru, do prohlížeče se nedostane |
+| Klíč vložený do stránky | secret `GOLEMIO_API_KEY`, bez `WORKER_URL` | **veřejně čitelný** v `config.js` |
+| Vlastní klíč návštěvníka | nic | každý zadá svůj, uloží se do `localStorage` |
+
+## Cloudflare Worker (`worker/`)
+
+Malá proxy na Cloudflare, která klíč drží na serveru. Ochrana:
+
+1. klíč je jen v secretu Workeru, nevrací se v odpovědích ani v chybách,
+2. jen `GET` a jen endpointy, které stránka používá, s validací parametrů,
+3. odpovídá jen originům z `ALLOWED_ORIGINS` (`worker/wrangler.toml`),
+4. polohy stahuje z Golemia max. 1× za 5 s pro všechny návštěvníky a výřez mapy filtruje sám,
+   takže zneužití nevyčerpá limit klíče,
+5. rate limit 180 požadavků/min na IP,
+6. na free tarifu Cloudflare (100 000 požadavků/den) nemůže vzniknout žádný účet.
+
+### Nasazení (přes GitHub Actions)
+
+1. Cloudflare → Workers & Pages: při prvním otevření si zvol subdoménu `*.workers.dev`.
+2. Cloudflare → Manage account → Account API tokens → Create token → šablona **Edit Cloudflare Workers**.
+3. V repu (Settings → Secrets and variables → Actions) přidej secrets:
+   - `CLOUDFLARE_API_TOKEN`: token z kroku 2,
+   - `CLOUDFLARE_ACCOUNT_ID`: ID účtu (je v URL dashboardu: `dash.cloudflare.com/<ID>/…`),
+   - `GOLEMIO_API_KEY`: **nový** klíč z Golemia (starý je veřejný, zneplatni ho).
+4. Spusť workflow **worker** (Actions → worker → Run workflow). Na konci vypíše URL Workeru.
+5. Přidej repo proměnnou (záložka Variables) `WORKER_URL` = ta URL, např. `https://emhadecko.<subdoména>.workers.dev`.
+6. Spusť workflow **pages**. Stránka pak volá Worker a klíč v ní už není.
+
+Testy Workeru: `cd worker && npm test`.
 
 ## Nasazení na GitHub Pages
 
