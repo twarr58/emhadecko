@@ -387,18 +387,13 @@
     details.set(id, d);
     try {
       const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(id)}`, CFG.apiBase);
-      const trip = v.props.gtfs_trip_id;
-      const needShape = !(shapes.get(trip) && typeof shapes.get(trip) === "object");
-      for (const s of ["info", "stop_times", "vehicle_descriptor", ...(needShape ? ["shapes"] : [])]) url.searchParams.append("scopes", s);
+      requestShape(v, true); // trasa otevřeného spoje (podle trip_id)
+      for (const s of ["info", "stop_times", "vehicle_descriptor"]) url.searchParams.append("scopes", s);
       const key = getKey();
       const res = await fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) }, cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       d.data = await res.json();
       d.error = null;
-      if (needShape && d.data?.shapes) {
-        const sh = buildShape(d.data.shapes.features);
-        if (sh) { shapes.set(trip, sh); onShapeLoaded(trip); }
-      }
     } catch (e) {
       d.error = e.message;
     } finally {
@@ -460,7 +455,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[p.role];
       const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag)),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
@@ -484,7 +479,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[role];
       const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, s.stop_name, tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag)),
         h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
       li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
       return li;
@@ -974,30 +969,29 @@
     }
   }
 
-  function requestShape(v) {
+  /** force = trasa otevřeného spoje: přednostně a bez ohledu na rozpočet */
+  function requestShape(v, force = false) {
     const trip = v.props.gtfs_trip_id;
     if (!trip || shapes.has(trip)) return;
     if (shapes.size > 600) for (const [k, s] of shapes) if (s !== "pending") shapes.delete(k);
     shapes.set(trip, "pending");
-    shapeQueue.push({ trip, vehicleId: v.id });
+    const item = { trip, vehicleId: v.id, force };
+    if (force) shapeQueue.unshift(item); else shapeQueue.push(item);
     pumpShapes();
   }
 
   function pumpShapes() {
-    while (shapeInflight < SHAPE_CONCURRENCY && shapeBudget > 0 && shapeQueue.length) {
-      const { trip, vehicleId } = shapeQueue.shift();
+    while (shapeInflight < SHAPE_CONCURRENCY && shapeQueue.length && (shapeBudget > 0 || shapeQueue[0].force)) {
+      const { trip, vehicleId, force } = shapeQueue.shift();
       const v = vehicles.get(vehicleId);
-      // vozidlo mezitím zmizelo z výřezu → trasu teď nepotřebujeme
-      if (!v || v.mode !== "label") { shapes.delete(trip); continue; }
+      // vozidlo mezitím zmizelo z výřezu nebo přejelo na jiný spoj → trasu teď nepotřebujeme
+      if (!force && (!v || v.mode !== "label" || v.props.gtfs_trip_id !== trip)) { shapes.delete(trip); continue; }
       shapeInflight++;
-      shapeBudget--;
-      const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, CFG.apiBase);
-      url.searchParams.append("scopes", "shapes");
-      const key = getKey();
-      fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
-        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); })
-        .catch((status) => { if (status === 429) shapes.delete(trip); else shapes.set(trip, "none"); })
+      if (!force) shapeBudget--;
+      // trasa podle spoje (ne podle vozidla: to během dne přejíždí mezi spoji)
+      apiFetch(`/v2/public/gtfs/trips/${encodeURIComponent(trip)}`, [["scopes", "shapes"]])
+        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); })
+        .catch((e) => { if (/429/.test(e.message)) shapes.delete(trip); else shapes.set(trip, "none"); })
         .finally(() => { shapeInflight--; pumpShapes(); });
     }
   }
