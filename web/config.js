@@ -1,11 +1,11 @@
-// Runtime konfigurace. Při deployi na GitHub Pages se soubor přepíše
-// z repo proměnné PROXY_URL (viz .github/workflows/pages.yml).
+// Runtime konfigurace. Při deployi na GitHub Pages ji workflow přepíše
+// (viz .github/workflows/pages.yml).
 //
-// apiBase   – základ URL API. Buď přímo Golemio, nebo vlastní proxy.
-// needsKey  – true = API klíč zadává uživatel v prohlížeči (uloží se do localStorage),
-//             false = klíč doplňuje proxy na serveru.
+// apiKey – Golemio X-Access-Token vložený při buildu z GitHub secretu
+//          GOLEMIO_API_KEY. Prázdný = uživatel zadá vlastní klíč v prohlížeči.
+//          POZOR: klíč vložený sem je veřejně čitelný pro každého návštěvníka.
 window.EMHADECKO_CONFIG = {
   apiBase: "https://api.golemio.cz",
-  needsKey: true,
+  apiKey: "",
   pollSeconds: 10,
 };

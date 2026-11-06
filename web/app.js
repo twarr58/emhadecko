@@ -7,7 +7,7 @@
   "use strict";
 
   const CFG = Object.assign(
-    { apiBase: "https://api.golemio.cz", needsKey: true, pollSeconds: 10 },
+    { apiBase: "https://api.golemio.cz", apiKey: "", pollSeconds: 10 },
     window.EMHADECKO_CONFIG || {},
   );
   const POLL_MS = Math.max(5, CFG.pollSeconds) * 1000;
@@ -84,7 +84,8 @@
   }
 
   // ---------- API klíč ----------
-  function getKey() { return store.get(KEY_STORAGE); }
+  // vlastní klíč uživatele má přednost před klíčem vloženým při buildu
+  function getKey() { return store.get(KEY_STORAGE) || CFG.apiKey || null; }
 
   function askKey() {
     return new Promise((resolve) => {
@@ -92,16 +93,14 @@
       $dialog.addEventListener("close", () => {
         const v = $keyInput.value.trim();
         if (v) store.set(KEY_STORAGE, v);
-        resolve(v || getKey());
+        resolve(getKey());
       }, { once: true });
       $dialog.showModal();
     });
   }
 
-  if (CFG.needsKey) {
-    $changeKey.hidden = false;
-    $changeKey.addEventListener("click", async () => { await askKey(); refresh(); });
-  }
+  $changeKey.hidden = false;
+  $changeKey.addEventListener("click", async () => { await askKey(); refresh(); });
 
   // ---------- vozidla ----------
   /** @type {Map<string, {marker: L.Marker, props: object, from: L.LatLng, to: L.LatLng, t0: number, dur: number, iconKey: string}>} */
@@ -255,21 +254,17 @@
     const url = new URL("/v2/public/vehiclepositions", CFG.apiBase);
     url.searchParams.set("boundingBox", bboxParam());
     const headers = { Accept: "application/json" };
-    if (CFG.needsKey) {
-      let key = getKey();
-      if (!key) key = await askKey();
-      if (!key) throw new Error("Chybí API klíč.");
-      headers["X-Access-Token"] = key;
-    }
+    let key = getKey();
+    if (!key) key = await askKey();
+    if (!key) throw new Error("Chybí API klíč.");
+    headers["X-Access-Token"] = key;
 
     inflight?.abort();
     inflight = new AbortController();
     const res = await fetch(url, { headers, signal: inflight.signal, cache: "no-store" });
     if (res.status === 401 || res.status === 403) {
-      if (CFG.needsKey) {
-        setStatus("Neplatný API klíč.", true);
-        await askKey();
-      }
+      setStatus("Neplatný API klíč.", true);
+      await askKey();
       throw new Error(`HTTP ${res.status}: neautorizováno`);
     }
     if (res.status === 429) throw new Error("Překročen limit požadavků (429), zkusím později.");

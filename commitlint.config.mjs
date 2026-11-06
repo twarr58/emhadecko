@@ -7,7 +7,7 @@ export default {
       'always',
       ['build', 'chore', 'ci', 'docs', 'feat', 'fix', 'perf', 'refactor', 'revert', 'style', 'test', 'deps'],
     ],
-    'scope-enum': [1, 'always', ['web', 'proxy', 'ci', 'deps', 'docs', 'deploy']],
+    'scope-enum': [1, 'always', ['web', 'ci', 'deps', 'docs']],
     'body-max-line-length': [0],
     'footer-max-line-length': [0],
   },

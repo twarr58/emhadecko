@@ -1,7 +1,7 @@
 # <type>(<scope>): <subject>
 #
 # type:  feat | fix | docs | style | refactor | perf | test | build | ci | chore | revert | deps
-# scope: web | proxy | ci | deps | docs | deploy   (volitelné)
+# scope: web | ci | deps | docs   (volitelné)
 #
 # Příklad: feat(web): plynulá animace pohybu vozidel
 #

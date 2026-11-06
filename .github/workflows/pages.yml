@@ -24,18 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pokud je nastavená repo proměnná PROXY_URL (Settings → Variables),
-      # frontend volá proxy a nepotřebuje API klíč v prohlížeči.
-      - name: Configure API base
-        if: vars.PROXY_URL != ''
-        env:
-          PROXY_URL: ${{ vars.PROXY_URL }}
-        run: |
-          jq -n --arg u "$PROXY_URL" \
-            '"window.EMHADECKO_CONFIG = " + ({apiBase: $u, needsKey: false, pollSeconds: 10} | tojson) + ";"' -r \
-            > web/config.js
-          cat web/config.js
-
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

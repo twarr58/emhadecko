@@ -10,19 +10,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-
-  - package-ecosystem: gomod
-    directory: /proxy
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: deps
-      include: scope
-
-  - package-ecosystem: docker
-    directory: /proxy
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: deps
-      include: scope
