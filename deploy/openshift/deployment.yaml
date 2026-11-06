@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emhadecko-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      containers:
+        - name: proxy
+          image: emhadecko-proxy
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: GOLEMIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: golemio
+                  key: api-key
+            - name: ALLOWED_ORIGINS
+              value: https://twarr58.github.io
+            - name: CACHE_TTL
+              value: 5s
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
