@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>emhadecko · PID live</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <aside id="panel">
+    <h1>emhadecko <span class="live">● live</span></h1>
+    <div id="types"></div>
+    <input id="lines" type="text" placeholder="Linky, např. 22, 9, A, 135" autocomplete="off">
+    <div id="status">Načítám…</div>
+    <button id="change-key" type="button" hidden>Změnit API klíč</button>
+  </aside>
+
+  <dialog id="key-dialog">
+    <form method="dialog">
+      <h2>Golemio API klíč</h2>
+      <p>Data PID poskytuje <a href="https://api.golemio.cz/api-keys" target="_blank" rel="noopener">Golemio</a>
+        a vyžadují zdarma vydaný API klíč. Klíč zůstane jen ve tvém prohlížeči (localStorage).</p>
+      <input id="key-input" type="password" required placeholder="X-Access-Token" autocomplete="off">
+      <menu><button value="ok">Uložit</button></menu>
+    </form>
+  </dialog>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
