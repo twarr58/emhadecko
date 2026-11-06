@@ -4,6 +4,7 @@
  * Vrstvy ochrany:
  *  1. klíč je jen v secretu GOLEMIO_API_KEY, nikdy se nevrací ani neloguje
  *  2. allowlist: jen GET a jen endpointy, které stránka používá, s validací parametrů
+ *     (polohy, detail vozidla, zastávky spoje, odjezdy, přestupní tablo)
  *  3. CORS + kontrola Origin: odpovídá jen povoleným originům (ALLOWED_ORIGINS)
  *  4. cache: polohy se z Golemia stahují max. 1× za POSITIONS_TTL pro všechny klienty
  *     a výřez mapy se filtruje tady → zneužití nevyčerpá limit klíče
@@ -126,12 +127,35 @@ async function departures(env, q) {
   return { body, maxAge: 10 };
 }
 
+// přestupní tablo PID (stejné jako ve vozidlech): odjezdy z uzlu bez vlastního vozidla
+const TB_ROUTE_TYPES = new Set(["0", "1", "2", "3", "4", "7", "11"]);
+async function transferBoards(env, q) {
+  const aswId = q.get("aswId") || "";
+  if (!/^\d{1,5}(_\d{1,4})?$/.test(aswId)) throw new HttpError(400, "invalid aswId");
+  const reg = q.get("vehicleRegistrationNumber");
+  const tripNumber = q.get("tripNumber");
+  if (!!reg === !!tripNumber) throw new HttpError(400, "exactly one of vehicleRegistrationNumber or tripNumber");
+  if (reg && !/^[0-9A-Za-z]{1,20}$/.test(reg)) throw new HttpError(400, "invalid vehicleRegistrationNumber");
+  if (tripNumber && !/^\d{1,8}$/.test(tripNumber)) throw new HttpError(400, "invalid tripNumber");
+  const routeType = q.get("routeType") || "";
+  if (!TB_ROUTE_TYPES.has(routeType)) throw new HttpError(400, "invalid routeType");
+  const timeFrom = q.get("timeFrom");
+  if (timeFrom != null && !/^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?$/.test(timeFrom)) throw new HttpError(400, "invalid timeFrom");
+  const limit = intParam(q, "limit", 12, 1, 20);
+  const params = [["aswId", aswId], reg ? ["vehicleRegistrationNumber", reg] : ["tripNumber", tripNumber], ["routeType", routeType], ["limit", String(limit)]];
+  if (timeFrom) params.push(["timeFrom", timeFrom]);
+  const key = `tb:${params.map((p) => p.join("=")).join("&")}`;
+  const body = await cached(key, 15_000, () => upstream(env, "/v4/pid/transferboards", params));
+  return { body, maxAge: 15 };
+}
+
 function route(path) {
   let m;
   if (path === "/v2/public/vehiclepositions") return (env, q) => vehiclePositions(env, q);
   if ((m = /^\/v2\/public\/vehiclepositions\/([^/]+)$/.exec(path))) return (env, q) => vehicleDetail(env, q, decodeURIComponent(m[1]));
   if ((m = /^\/v2\/gtfs\/trips\/([^/]+)$/.exec(path))) return (env, q) => tripStops(env, q, decodeURIComponent(m[1]));
   if (path === "/v2/public/departureboards") return (env, q) => departures(env, q);
+  if (path === "/v4/pid/transferboards") return (env, q) => transferBoards(env, q);
   return null;
 }
 

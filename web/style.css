@@ -218,3 +218,20 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .stop-tip.compact { min-width: 0; padding: 4px 9px; white-space: nowrap; }
 .stop-tip.compact .eta { font-weight: 800; }
 .leaflet-tooltip.stop-tip-wrap.next { border-left: 4px solid var(--fg); }
+
+/* přestupy */
+.vc-tr { margin: 6px 0 0; padding: 10px 0 4px; border-top: 1px solid var(--border); }
+.tr-head { padding: 0 14px; }
+.tr-head h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.tr-sub { margin-top: 2px; font-weight: 600; font-size: 13px; }
+.tr-stops { display: flex; gap: 6px; overflow-x: auto; padding: 8px 14px 6px; scrollbar-width: thin; }
+.tr-stops button {
+  flex: none; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--soft);
+  color: var(--fg); font: 600 11px system-ui, sans-serif; cursor: pointer; white-space: nowrap;
+}
+.tr-stops button.on { background: var(--c); border-color: var(--c); color: #fff; }
+.tr-info { margin: 4px 14px; padding: 6px 8px; border-radius: 8px; background: var(--minor-bg); font-size: 11px; }
+.tr-list .dh small { font-weight: 400; color: var(--muted); }
+.tr-list .dh .sub { display: block; color: var(--major); }
+.tr-list .tag.ok { margin-left: 6px; font-size: 10px; padding: 0 5px; border-radius: 4px; background: var(--ok-bg); color: var(--ok); text-transform: uppercase; font-weight: 700; }
+.tr-list .dt b.tight { color: var(--major); }

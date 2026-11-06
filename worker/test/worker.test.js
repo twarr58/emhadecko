@@ -123,3 +123,20 @@ test("bez nastaveného klíče vrátí 500, ne požadavek bez klíče", async ()
   assert.equal(r.status, 500);
   assert.equal(calls.length, 0);
 });
+
+test("přestupní tablo: povolené parametry projdou, ostatní 400", async () => {
+  let r = await req("/v4/pid/transferboards?aswId=1330_1&vehicleRegistrationNumber=8544&routeType=0&timeFrom=2026-11-06T23:10:00&limit=12");
+  assert.equal(r.status, 200);
+  const u = new URL(calls[0].url);
+  assert.equal(u.pathname, "/v4/pid/transferboards");
+  assert.equal(u.searchParams.get("timeFrom"), "2026-11-06T23:10:00");
+  for (const q of [
+    "/v4/pid/transferboards?aswId=abc&vehicleRegistrationNumber=1&routeType=0",
+    "/v4/pid/transferboards?aswId=1330&routeType=0",
+    "/v4/pid/transferboards?aswId=1330&vehicleRegistrationNumber=1&tripNumber=2&routeType=0",
+    "/v4/pid/transferboards?aswId=1330&vehicleRegistrationNumber=1&routeType=5",
+    "/v4/pid/transferboards?aswId=1330&vehicleRegistrationNumber=1&routeType=0&timeFrom=tomorrow",
+    "/v4/pid/transferboards?aswId=1330&vehicleRegistrationNumber=1&routeType=0&limit=99",
+  ]) assert.equal((await req(q)).status, 400, q);
+  assert.equal(calls.length, 1);
+});
