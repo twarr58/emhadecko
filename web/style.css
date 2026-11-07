@@ -29,6 +29,7 @@ html, body { margin: 0; height: 100%; font: 14px/1.4 system-ui, sans-serif; back
 #lines { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
 #status { color: var(--muted); font-size: 12px; margin-top: 6px; }
 #status.err { color: #d6001c; }
+#status.warn { color: #b45309; }
 #change-key { margin-top: 6px; font-size: 12px; }
 
 /* vozidlo: barevný badge s číslem linky + šipka směru */
