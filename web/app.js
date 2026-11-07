@@ -347,7 +347,7 @@
     if (!v) return;
     stopPanel = null;
     if (openId !== id) {
-      showAllStops = false; stopView = null; transferSeq = null; fareFrom = null; fareTo = null; clearTrip();
+      showAllStops = false; stopView = null; transferSeq = null; clearTrip();
       const prev = vehicles.get(openId);
       openId = id;
       setXferTrips([]);
@@ -549,79 +549,6 @@
       out.push(zs[0]);
     }
     return out;
-  }
-
-  // ---------- orientační cena jízdenky (#19): logika ve fare.js, ceník v tariff.json ----------
-  let tariff = null;
-  let tariffLoading = false;
-  let fareFrom = null; // stop_sequence nástupu (null = příští zastávka)
-  let fareTo = null; // stop_sequence výstupu (null = konečná)
-
-  function loadTariff() {
-    if (tariff || tariffLoading) return;
-    tariffLoading = true;
-    fetch("tariff.json").then((r) => (r.ok ? r.json() : null))
-      .then((t) => { tariff = t; if (t && openId) refreshCard(openId); })
-      .catch(() => {})
-      .finally(() => { tariffLoading = false; });
-  }
-
-  const kc = (n) => `${n} Kč`;
-
-  function renderFare(id, info, stopTimes, state) {
-    if (!window.PidFare) return null;
-    loadTariff();
-    if (!tariff) return null;
-    const { feats, idx } = stopContext(info, stopTimes);
-    const options = feats.slice(Math.max(0, state === "at_stop" ? idx : idx + 1));
-    if (options.length < 2) return null;
-    const from = options.slice(0, -1).find((s) => s.stop_sequence === fareFrom) || options[0];
-    const toOptions = options.filter((s) => s.stop_sequence > from.stop_sequence);
-    const to = toOptions.find((s) => s.stop_sequence === fareTo) || toOptions[toOptions.length - 1];
-    const segment = feats.filter((s) => s.stop_sequence >= from.stop_sequence && s.stop_sequence <= to.stop_sequence);
-
-    const dep = gtfsTime(from.realtime_departure_time || from.departure_time);
-    let arr = gtfsTime(to.realtime_arrival_time || to.arrival_time);
-    if (dep != null && arr != null && arr < dep) arr += 86400e3;
-    const minutes = dep != null && arr != null ? Math.max(1, Math.round((arr - dep) / 60000)) : null;
-    const r = minutes == null ? { error: "Chybí časy jízdního řádu." }
-      : window.PidFare.computeFare(segment.map((s) => ({ zones: zonesOf(s) })), minutes, tariff);
-
-    const select = (label, list, current, onPick) => {
-      const sel = h("select", { "aria-label": label }, list.map((s) =>
-        h("option", { value: String(s.stop_sequence), selected: s === current ? "selected" : null }, s.stop_name)));
-      sel.addEventListener("change", () => { onPick(Number(sel.value)); refreshCard(id); });
-      return h("label", { class: "fare-pick" }, h("span", null, label), sel);
-    };
-
-    let result;
-    if (r.error) {
-      result = h("div", { class: "vc-msg" }, r.error);
-    } else {
-      const t = r.ticket;
-      const isPrague = r.kind === "prague";
-      const name = isPrague ? t.name : `${t.zones} pásma, ${t.minutes} min`.replace(/^(\d+) pásma/, (m, n) => `${n} ${Number(n) >= 5 ? "pásem" : "pásma"}`);
-      const who = isPrague ? tariff.prague : tariff.region;
-      result = h("div", { class: "fare-res" },
-        h("div", { class: "fare-main" }, h("span", null, name), h("b", null, kc(t.full.app))),
-        h("div", { class: "fare-sub" },
-          `papírová ${kc(t.full.paper)}`,
-          t.reduced ? ` · zvýhodněná ${kc(t.reduced.app)} / ${kc(t.reduced.paper)}` : ""),
-        h("div", { class: "fare-who" }, `Zdarma: ${who.free_for}.`));
-    }
-
-    return h("section", { class: "vc-fare" },
-      h("h3", null, "Jízdenka na tuto cestu"),
-      h("div", { class: "fare-picks" },
-        select("Odkud", options.slice(0, -1), from, (q) => { fareFrom = q; if (fareTo != null && fareTo <= q) fareTo = null; }),
-        select("Kam", toOptions, to, (q) => { fareTo = q; })),
-      r.zones ? h("div", { class: "fare-zones" },
-        "Pásma ", r.zones.map((z, i) => [i ? " · " : null, h("b", null, z)]).flat(),
-        ` (${r.zones.length})`, minutes != null ? ` · jízda ${minutes} min` : "") : null,
-      result,
-      h("div", { class: "fare-note" }, "Orientačně podle ceníku PID platného od ",
-        new Date(tariff.valid_from).toLocaleDateString("cs-CZ"), " (cena v aplikaci PID Lítačka). ",
-        h("a", { href: tariff.source, target: "_blank", rel: "noopener" }, "Oficiální ceník ↗")));
   }
 
   function renderStops(info, stopTimes, state) {
@@ -1310,8 +1237,7 @@
     );
 
     const tr = data ? renderTransfers(id) : null;
-    const fare = data ? renderFare(id, info, data.stop_times, state) : null;
-    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, fare, tr, veh,
+    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, tr, veh,
       h("footer", { class: "vc-foot" }, `spoj ${p.gtfs_trip_id || "?"}`));
   }
 
@@ -1547,6 +1473,8 @@
     const data = await res.json();
     zonesAttribution = data.attribution || "";
     const group = L.layerGroup();
+    zonesFeatures = data.features;
+    zoneLabels = L.layerGroup();
     data.features.forEach((f, i) => {
       const prague = f.properties.prague;
       L.geoJSON(f, {
@@ -1560,16 +1488,52 @@
       L.marker([lat, lng], {
         pane: "zones", interactive: false, keyboard: false,
         icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="zone-label${prague ? " p" : ""}">${prague ? "P · 0 · B" : `pásmo ${f.properties.zone}`}</div>` }),
-      }).addTo(group);
+      }).addTo(zoneLabels);
     });
     return group;
   }
+
+  // Popisky pásem dávají smysl jen při oddálení (je vidět víc pásem). Při přiblížení by jeden bod
+  // "P · 0 · B" ležel náhodně mezi vozidly – místo něj legenda ukáže pásmo středu mapy.
+  const ZONE_LABEL_MAX_ZOOM = 11;
+  let zonesFeatures = null;
+  let zoneLabels = null;
+  const $zonesHere = document.getElementById("zones-here");
+
+  function inRing(x, y, r) {
+    let c = false;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [xi, yi] = r[i], [xj, yj] = r[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  }
+
+  function zoneAt(latlng) {
+    for (const f of zonesFeatures || []) {
+      for (const poly of f.geometry.coordinates) {
+        if (inRing(latlng.lng, latlng.lat, poly[0]) && !poly.slice(1).some((hole) => inRing(latlng.lng, latlng.lat, hole))) return f.properties;
+      }
+    }
+    return null;
+  }
+
+  function updateZoneView() {
+    if (!zonesLayer || !map.hasLayer(zonesLayer)) return;
+    const showLabels = map.getZoom() <= ZONE_LABEL_MAX_ZOOM;
+    if (showLabels && !map.hasLayer(zoneLabels)) zoneLabels.addTo(map);
+    if (!showLabels && map.hasLayer(zoneLabels)) zoneLabels.remove();
+    const z = zoneAt(map.getCenter());
+    $zonesHere.textContent = z ? `Střed mapy: ${z.prague ? "Praha (P, 0, B)" : `pásmo ${z.zone}`}` : "Střed mapy: mimo pásma PID";
+  }
+  map.on("zoomend moveend", updateZoneView);
 
   async function setZonesLayer(on) {
     store.set(ZONES_STORAGE, on ? "1" : "0");
     $layerZones.checked = on;
     if (!on) {
       zonesLayer?.remove();
+      zoneLabels?.remove();
       if (zonesAttribution) map.attributionControl.removeAttribution(zonesAttribution);
       $zonesLegend.hidden = true;
       return;
@@ -1580,6 +1544,7 @@
       zonesLayer.addTo(map);
       if (zonesAttribution) map.attributionControl.addAttribution(zonesAttribution);
       $zonesLegend.hidden = false;
+      updateZoneView();
     } catch (e) {
       console.error(e);
       $layerZones.checked = false;
