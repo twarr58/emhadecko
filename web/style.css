@@ -61,14 +61,18 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 }
 .vc-head { position: sticky; top: 0; z-index: 2; }
 .vc-close {
-  position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 0; border-radius: 50%;
-  background: rgba(255,255,255,.18); color: #fff; font-size: 20px; line-height: 28px; cursor: pointer;
+  /* svisle na střed hlavičky, křížek (SVG) na střed kruhu */
+  position: absolute; top: 50%; right: 10px; transform: translateY(-50%);
+  display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  background: rgba(255,255,255,.18); color: #fff; cursor: pointer;
 }
+.vc-close::after { content: ""; position: absolute; inset: -6px; } /* větší plocha pro dotyk (44 px) */
+.vc-close svg { display: block; }
 .vc-close:hover { background: rgba(255,255,255,.32); }
 .sel-ring { animation: ring 1.6s ease-out infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes ring { 0% { opacity: 1; } 70% { opacity: .35; } 100% { opacity: 1; } }
 
-.vc-head { display: flex; align-items: center; gap: 12px; padding: 12px 36px 12px 14px; background: var(--c); color: #fff; }
+.vc-head { display: flex; align-items: center; gap: 12px; padding: 12px 52px 12px 14px; background: var(--c); color: #fff; }
 .vc-line {
   min-width: 40px; height: 40px; padding: 0 8px; box-sizing: border-box; border-radius: 10px;
   background: rgba(255,255,255,.95); color: var(--c); font: 800 20px/40px system-ui, sans-serif; text-align: center;
@@ -89,11 +93,11 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-delay .small { color: inherit; opacity: .8; }
 
 .vc-where {
-  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0;
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0;
   padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border);
 }
 .vc-where .lbl { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.vc-where b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vc-where b { font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
 .vc-where .pin { flex: none; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--c); box-sizing: border-box; }
 .vc-where.at { border-color: var(--c); background: color-mix(in srgb, var(--c) 10%, var(--bg)); }
 .vc-where.at .pin { background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 30%, transparent); }
@@ -286,6 +290,10 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .tr-list .onmap { color: #22c55e; font-size: 11px; }
 
 /* dlouhý název zastávky: zkrátit text, štítek (PŘÍŠTÍ/ZDE/KONEČNÁ) nechat celý */
-.vc-stops .name { display: flex; align-items: center; min-width: 0; }
-.vc-stops .name .nt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vc-stops .name .tag { flex: none; }
+/* dlouhý název zastávky: zalomit (max. 2 řádky), štítky se přesunou pod něj */
+.vc-stops .name { display: flex; flex-wrap: wrap; align-items: center; row-gap: 2px; min-width: 0; white-space: normal; overflow: visible; }
+.vc-stops .name .nt {
+  min-width: 0; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+}
+.vc-stops .name .tag, .vc-stops .name .kind { flex: none; }
