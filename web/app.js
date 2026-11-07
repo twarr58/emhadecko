@@ -72,10 +72,53 @@
   }
 
   let lineFilter = null;
+  // ---------- hledání linek jako aditivní chipy ----------
+  // Rozepsaný text funguje jako náhled (filtr se uplatní hned), Enter nebo čárka z něj udělá chip.
+  const $chips = document.getElementById("chips");
+  const CHIPS_STORAGE = "emhadecko.lines";
+  let chips = [];
+  try { chips = (JSON.parse(store.get(CHIPS_STORAGE)) || []).filter((x) => typeof x === "string").slice(0, 20); } catch { chips = []; }
+
+  const typedLines = () => $lines.value.split(/[\s,;]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
+
+  function renderChips() {
+    $chips.replaceChildren(...chips.map((line) => {
+      const sample = [...vehicles.values()].find((v) => String(v.props.gtfs_route_short_name).toUpperCase() === line);
+      const btn = h("button", { type: "button", "aria-label": `Odebrat linku ${line}`, title: "Odebrat" }, "×");
+      btn.addEventListener("click", () => { removeChip(line); $lines.focus(); });
+      return h("li", { class: "chip", style: sample ? `--c:${colorFor(sample.props)}` : null }, h("span", null, line), btn);
+    }));
+  }
+
+  function commitTyped() {
+    const added = typedLines().filter((x) => !chips.includes(x));
+    chips = [...chips, ...added].slice(0, 20);
+    $lines.value = "";
+    store.set(CHIPS_STORAGE, JSON.stringify(chips));
+    renderChips();
+    return added;
+  }
+
+  function removeChip(line) {
+    chips = chips.filter((x) => x !== line);
+    store.set(CHIPS_STORAGE, JSON.stringify(chips));
+    renderChips();
+    onLineFilter(true, false);
+  }
+
   $lines.addEventListener("input", () => {
-    const parts = $lines.value.split(/[\s,;]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
-    lineFilter = parts.length ? new Set(parts) : null;
-    applyFilter();
+    if (/[,;]/.test($lines.value)) { commitTyped(); onLineFilter(true); return; } // čárka = hotovo
+    onLineFilter(false);
+  });
+  $lines.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commitTyped(); onLineFilter(true); }
+    else if (e.key === "Backspace" && !$lines.value && chips.length) { removeChip(chips[chips.length - 1]); }
+    else if (e.key === "Escape" && ($lines.value || chips.length)) {
+      e.stopPropagation(); // neuzavírat kartu
+      if ($lines.value) $lines.value = "";
+      else { chips = []; store.set(CHIPS_STORAGE, "[]"); renderChips(); }
+      onLineFilter(true, false);
+    }
   });
 
   function setStatus(text, isError = false, isWarn = false) {
@@ -145,8 +188,11 @@
   const FEW_LIMIT = 60;
   let fewMode = false;
 
+  const matchesFilter = (p) => !!lineFilter && lineFilter.has(String(p.gtfs_route_short_name).toUpperCase());
+
   function visible(p) {
     if (xferTrips.has(p.gtfs_trip_id)) return true;
+    if ((p.vehicle_id || p.gtfs_trip_id) === openId) return true; // otevřená karta → vozidlo vždy na mapě
     if (!enabledTypes.has(p.route_type)) return false;
     if (lineFilter && !lineFilter.has(String(p.gtfs_route_short_name).toUpperCase())) return false;
     return true;
@@ -164,7 +210,7 @@
 
   function dotStyle(p) {
     const late = (p.delay ?? 0) >= 180;
-    const dim = xferTrips.size > 0 && !xferTrips.has(p.gtfs_trip_id);
+    const dim = xferTrips.size > 0 && !xferTrips.has(p.gtfs_trip_id) && !matchesFilter(p);
     return {
       fillColor: colorFor(p), color: late ? "#ffb000" : "#fff", weight: late ? 2 : 1,
       opacity: dim ? 0.25 : 1, fillOpacity: dim ? 0.25 : 1,
@@ -180,7 +226,7 @@
     const xfer = xferTrips.has(p.gtfs_trip_id);
     const xferText = xfer ? xferTrips.get(p.gtfs_trip_id) : "";
     const sel = (p.vehicle_id || p.gtfs_trip_id) === openId;
-    const dim = xferTrips.size > 0 && !xfer && !sel;
+    const dim = xferTrips.size > 0 && !xfer && !sel && !matchesFilter(p);
     const key = `${p.gtfs_route_short_name}|${color}|${late}|${bearing}|${xfer}|${xferText}|${sel}|${dim}`;
     if (key === prevKey) return { key, icon: null };
 
@@ -1469,7 +1515,8 @@
   function updateCount(extra = lastOk ? ` · ${lastOk.toLocaleTimeString("cs-CZ")}` : "") {
     let shown = 0;
     for (const v of vehicles.values()) if (v.mode) shown++;
-    setStatus(`${shown} / ${vehicles.size} vozidel${extra}${pollNote()}`);
+    const f = lineFilter ? ` · filtr: ${[...lineFilter].join(", ")}` : "";
+    setStatus(`${shown} / ${vehicles.size} vozidel${f}${extra}${pollNote()}`);
   }
 
   // ---------- vrstva tarifních pásem (#18): oficiální polygony IPR Praha, zjednodušené v scripts/fetch_zones.py ----------
@@ -1634,6 +1681,85 @@
       h("ul", { class: "al-list" }, list.map((a) => alertItem(a, true))));
   }
 
+  // ---------- hledání linky ve filtru ----------
+  // Filtr je nový záměr: karta jiné linky se zavře (a s ní zvýraznění přestupů). Mapa se během psaní
+  // nehýbe; až po dopsání (0,8 s) nebo Enteru najdeme vozidla v celé síti a ukážeme je.
+  const LOCATE_DELAY_MS = 800;
+  let locateTimer = null;
+  let locateSeq = 0;
+  let locateAbort = null;
+  const located = new Map(); // klíč filtru → body vozidel (cache pro tutéž hodnotu)
+
+  /**
+   * commit = filtr je hotový (Enter, čárka, odebrání chipu): hned zavřít kartu jiné linky a případně najít vozidla.
+   * Při psaní se obojí odloží o LOCATE_DELAY_MS, ať "2" na cestě k "22" nic nezavře ani neposune mapu.
+   * locate = false: jen filtrovat (odebrání chipu, Esc) – mapou nehýbat.
+   */
+  function onLineFilter(commit, locate = true) {
+    const parts = [...new Set([...chips, ...typedLines()])];
+    lineFilter = parts.length ? new Set(parts) : null;
+    applyFilter();
+    clearTimeout(locateTimer);
+    locateAbort?.abort();
+    const settle = () => {
+      const open = openId && vehicles.get(openId);
+      if (open && lineFilter && !matchesFilter(open.props)) closeCard();
+      if (lineFilter && locate) locateMatches(commit);
+    };
+    if (commit) settle();
+    else locateTimer = setTimeout(settle, LOCATE_DELAY_MS);
+  }
+
+  async function locateMatches(force) {
+    const key = [...lineFilter].sort().join(", ");
+    const view = map.getBounds();
+    const inView = [...vehicles.values()].filter((v) => matchesFilter(v.props) && view.contains(v.pos));
+    if (!force && inView.length) return; // něco je vidět → mapou nehýbat
+    const seq = ++locateSeq;
+    let pts = located.get(key);
+    if (!pts) {
+      if (backoffMs) return; // po 429 nepřidávat požadavky
+      locateAbort = new AbortController();
+      try {
+        const types = [...enabledTypes];
+        const params = types.length === 1 ? [["routeType", types[0]]] : [];
+        const url = new URL("/v2/public/vehiclepositions", CFG.apiBase);
+        params.forEach(([k, v]) => url.searchParams.append(k, v));
+        const key2 = getKey();
+        const res = await fetch(url, { headers: { Accept: "application/json", ...(key2 ? { "X-Access-Token": key2 } : {}) }, signal: locateAbort.signal });
+        if (!res.ok) throw httpError(res);
+        const data = await res.json();
+        pts = (data.features || [])
+          .filter((f) => f.geometry?.type === "Point" && matchesFilter(f.properties || {}) && enabledTypes.has(f.properties.route_type))
+          .map((f) => L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]));
+        located.set(key, pts);
+        if (located.size > 30) located.delete(located.keys().next().value);
+      } catch (e) {
+        if (e.name !== "AbortError" && e.status === 429) setStatus("PID API je teď přetížené, linku zkus najít za chvíli.", false, true);
+        return;
+      }
+    }
+    if (seq !== locateSeq || [...lineFilter].sort().join(", ") !== key) return; // mezitím jiný filtr
+    if (!pts.length) {
+      setStatus(`Linka ${key} teď v datech není (nejede, nebo je to překlep).`, false, true);
+      return;
+    }
+    const bounds = L.latLngBounds(pts);
+    // levá karta (desktop) nebo spodní panel (mobil) by zakryly část mapy
+    const c = $card.hidden ? null : $card.getBoundingClientRect();
+    const sheet = c && c.left <= 1;
+    const opts = { maxZoom: 15, paddingTopLeft: [c && !sheet ? c.right + 20 : 40, 40], paddingBottomRight: [40, sheet ? c.height + 20 : 40] };
+    if (map.getBoundsZoom(bounds, false, L.point(80, 80)) < 10) {
+      // linka přes celý kraj: neoddalovat na nečitelnou úroveň, ukázat nejbližší vozidlo
+      const center = map.getCenter();
+      const nearest = pts.reduce((a, b) => (a.distanceTo(center) <= b.distanceTo(center) ? a : b));
+      map.setView(nearest, 13);
+    } else {
+      map.fitBounds(bounds, opts);
+    }
+    setStatus(`Linka ${key}: ${pts.length} ${pts.length === 1 ? "vozidlo" : pts.length < 5 ? "vozidla" : "vozidel"}`);
+  }
+
   // ---------- fetch ----------
   function bboxParam() {
     const b = map.getBounds().pad(0.2);
@@ -1690,6 +1816,7 @@
       }
       pumpShapes();
       if (computeFewMode() !== fewMode) syncAll();
+      if (chips.length && $chips.querySelector("li:not([style])")) renderChips(); // doplnit barvy linek
       backoffMs = 0;
       lastOk = new Date();
       updateCount();
@@ -1842,6 +1969,10 @@
     if (document.hidden) clearTimeout(timer);
     else activity(), refresh();
   });
+
+  // uložené chipy z minula: jen filtrovat, mapou nehýbat
+  renderChips();
+  if (chips.length) onLineFilter(true, false);
 
   refresh();
 })();
