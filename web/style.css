@@ -313,3 +313,9 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
   font: 700 11px system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.25);
 }
 .leaflet-tooltip.xfer-end::before { display: none; }
+
+/* #15: spoje, kde je na znamení skoro všechno */
+.kind.al { background: var(--ok-bg); color: var(--ok); }
+.vc-mostly { margin: 10px 14px 0; font-size: 11px; color: var(--muted); display: flex; align-items: baseline; gap: 2px; }
+.vc-mostly .kind { margin: 0 4px 0 0; }
+.vc-rq-hint.small { padding: 4px 10px; font-size: 11px; }

@@ -543,20 +543,51 @@
   const tripStopsData = new Map();
 
   /** typ zastávky podle GTFS pickup_type/drop_off_type: 3 = na znamení, 1 = nelze nastoupit/vystoupit */
-  function stopKind(id, seq) {
+  const isReq = (st) => st.pickup === 3 || st.dropoff === 3;
+
+  /** skutečný typ zastávky z dat (výchozí a konečnou za "na znamení" nepovažujeme – tam vystupují/nastupují všichni) */
+  function rawStopKind(id, seq) {
     const trip = vehicles.get(id)?.props.gtfs_trip_id;
-    const st = tripStopsData.get(trip)?.get(Number(seq));
+    const m = tripStopsData.get(trip);
+    const st = m?.get(Number(seq));
     if (!st) return null;
-    if (st.pickup === 3 || st.dropoff === 3) return "request";
+    const seqs = [...m.keys()];
+    const terminal = Number(seq) === Math.min(...seqs) || Number(seq) === Math.max(...seqs);
+    if (isReq(st) && !terminal) return "request";
     if (st.pickup === 1 && st.dropoff !== 1) return "exit";
     if (st.dropoff === 1 && st.pickup !== 1) return "board";
     return null;
+  }
+
+  /**
+   * Většina zastávek spoje na znamení? (pražské autobusy: prakticky všechny)
+   * Pak se × u každé zastávky nevyplatí – zvýrazníme naopak zastávky, kde vozidlo staví vždy (#15).
+   */
+  function mostlyRequest(id) {
+    const trip = vehicles.get(id)?.props.gtfs_trip_id;
+    const m = tripStopsData.get(trip);
+    if (!m || m.size < 3) return false;
+    const seqs = [...m.keys()].sort((a, b) => a - b).slice(1, -1); // bez výchozí a konečné
+    return seqs.filter((q) => isReq(m.get(q))).length > seqs.length / 2;
+  }
+
+  /** typ zastávky k zobrazení: v režimu "většina na znamení" se ukazují výjimky ("staví vždy") */
+  function stopKind(id, seq) {
+    const kind = rawStopKind(id, seq);
+    if (!mostlyRequest(id)) return kind;
+    if (kind === "request") return null;
+    if (kind) return kind; // jen výstup / jen nástup
+    const m = tripStopsData.get(vehicles.get(id)?.props.gtfs_trip_id);
+    const seqs = [...m.keys()];
+    const terminal = Number(seq) === Math.min(...seqs) || Number(seq) === Math.max(...seqs);
+    return terminal ? null : "always";
   }
 
   function kindChip(kind, long = false) {
     if (kind === "request") return h("span", { class: "kind rq", title: "Zastávka na znamení" }, long ? "× na znamení" : "×");
     if (kind === "exit") return h("span", { class: "kind ex", title: "Jen pro výstup" }, "↓ jen výstup");
     if (kind === "board") return h("span", { class: "kind bd", title: "Jen pro nástup" }, "↑ jen nástup");
+    if (kind === "always") return h("span", { class: "kind al", title: "Vozidlo tu staví vždy, i bez znamení" }, "staví vždy");
     return null;
   }
 
@@ -699,7 +730,7 @@
     // budoucí zastávka s časem v minulosti = predikce ještě nedohnala zpoždění
     const when = rtMs == null ? "" : !passed && rtMs < Date.now() ? "každou chvíli" : relTime(rtMs);
 
-    const kind = stopKind(id, seq);
+    const kind = rawStopKind(id, seq);
     if (compact) {
       return h("div", { class: "stop-tip compact" },
         h("b", null, s.stop_name), " · ", h("span", { class: "eta" }, here ? `odjíždí ${when}` : when),
@@ -1054,15 +1085,18 @@
     );
     const where = data ? whereText(state, info, data.stop_times) : null;
     if (where) {
-      const kind = stopKind(id, where[2]);
+      const kind = rawStopKind(id, where[2]);
       status.append(h("div", { class: `vc-where ${state === "at_stop" ? "at" : ""}` },
         h("span", { class: "pin" }),
         where[0] ? h("span", { class: "lbl" }, where[0]) : null,
         h("b", { title: where[1] }, where[1]),
         kind ? h("span", { class: "push" }, kindChip(kind, true)) : null));
       if (kind === "request" && where[0] === "Příští zastávka") {
-        status.append(h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
-          "Chceš-li vystoupit, zmáčkni tlačítko. Na zastávce dej řidiči znamení rukou."));
+        // u spojů, kde je na znamení skoro všechno, stačí krátká nápověda místo velkého boxu
+        status.append(mostlyRequest(id)
+          ? h("div", { class: "vc-rq-hint small" }, "Chceš-li vystoupit, zmáčkni tlačítko.")
+          : h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
+            "Chceš-li vystoupit, zmáčkni tlačítko. Na zastávce dej řidiči znamení rukou."));
       }
     }
 
@@ -1073,6 +1107,13 @@
     if (d?.error && !data) body = h("div", { class: "vc-msg" }, d.limited ? "Detail spoje se načte za chvíli – PID API je teď přetížené." : "Detail spoje se nepodařilo načíst.");
     else if (!data) body = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
     else body = renderStops(info, data.stop_times, state) || h("div", { class: "vc-msg" }, "Jízdní řád spoje není k dispozici.");
+    if (data && mostlyRequest(id) && !showAllStops) {
+      body = h("div", null, h("div", { class: "vc-mostly" }, h("span", { class: "kind rq" }, "×"),
+        " Téměř všechny zastávky jsou na znamení. Označené jsou ty, kde vozidlo staví vždy."), body);
+    } else if (data && mostlyRequest(id)) {
+      body = h("div", null, h("div", { class: "vc-mostly" }, h("span", { class: "kind rq" }, "×"),
+        " Téměř všechny zastávky jsou na znamení."), body);
+    }
 
     const feats = [];
     if (desc?.is_wheelchair_accessible) feats.push(h("span", { class: "feat", title: "Bezbariérové vozidlo" }, "♿ bezbariérové"));
