@@ -1396,6 +1396,63 @@
     setStatus(`${shown} / ${vehicles.size} vozidel${extra}${pollNote()}`);
   }
 
+  // ---------- vrstva tarifních pásem (#18): oficiální polygony IPR Praha, zjednodušené v scripts/fetch_zones.py ----------
+  const ZONES_STORAGE = "emhadecko.layer.zones";
+  const $layerZones = document.getElementById("layer-zones");
+  const $zonesLegend = document.getElementById("zones-legend");
+  map.createPane("zones").style.zIndex = 250; // nad dlaždicemi, pod trasami a vozidly
+  map.getPane("zones").style.pointerEvents = "none"; // nebere kliky vozidlům ani zastávkám
+  let zonesLayer = null;
+  let zonesAttribution = "";
+
+  async function buildZonesLayer() {
+    const res = await fetch("zones.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    zonesAttribution = data.attribution || "";
+    const group = L.layerGroup();
+    data.features.forEach((f, i) => {
+      const prague = f.properties.prague;
+      L.geoJSON(f, {
+        pane: "zones", interactive: false,
+        style: {
+          color: prague ? "#1d4ed8" : "#475569", weight: prague ? 2 : 1.2, opacity: 0.7, dashArray: prague ? null : "5 5",
+          fillColor: prague ? "#2563eb" : i % 2 ? "#0891b2" : "#7c3aed", fillOpacity: prague ? 0.1 : 0.06,
+        },
+      }).addTo(group);
+      const [lng, lat] = f.properties.label;
+      L.marker([lat, lng], {
+        pane: "zones", interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="zone-label${prague ? " p" : ""}">${prague ? "P · 0 · B" : `pásmo ${f.properties.zone}`}</div>` }),
+      }).addTo(group);
+    });
+    return group;
+  }
+
+  async function setZonesLayer(on) {
+    store.set(ZONES_STORAGE, on ? "1" : "0");
+    $layerZones.checked = on;
+    if (!on) {
+      zonesLayer?.remove();
+      if (zonesAttribution) map.attributionControl.removeAttribution(zonesAttribution);
+      $zonesLegend.hidden = true;
+      return;
+    }
+    try {
+      zonesLayer ??= await buildZonesLayer();
+      if (!$layerZones.checked) return; // mezitím vypnuto
+      zonesLayer.addTo(map);
+      if (zonesAttribution) map.attributionControl.addAttribution(zonesAttribution);
+      $zonesLegend.hidden = false;
+    } catch (e) {
+      console.error(e);
+      $layerZones.checked = false;
+      setStatus("Vrstvu tarifních pásem se nepodařilo načíst.", false, true);
+    }
+  }
+  $layerZones.addEventListener("change", () => setZonesLayer($layerZones.checked));
+  if (store.get(ZONES_STORAGE) === "1") setZonesLayer(true);
+
   // ---------- výluky a mimořádnosti (RSS pid.cz → alerts.json, generuje workflow) ----------
   const $alerts = document.getElementById("alerts");
   const $alertsBtn = document.getElementById("alerts-btn");

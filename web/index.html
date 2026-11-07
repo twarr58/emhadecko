@@ -16,9 +16,19 @@
     <input id="lines" type="text" placeholder="Linky, např. 22, 9, A, 135" autocomplete="off">
     <div id="status">Načítám…</div>
     <button id="alerts-btn" type="button" hidden></button>
+    <fieldset id="layers">
+      <legend>Vrstvy</legend>
+      <label><input type="checkbox" id="layer-zones"> Tarifní pásma</label>
+    </fieldset>
     <button id="change-key" type="button" hidden>Změnit API klíč</button>
   </aside>
 
+  <div id="zones-legend" hidden>
+    <b>Tarifní pásma PID</b>
+    <span><i class="sw p"></i> Praha (P, 0, B), v datech bez vnitřního dělení</span>
+    <span><i class="sw a"></i><i class="sw b"></i> pásma 1, 2, 3… směrem od Prahy</span>
+    <small>datový podklad © IPR Praha (CC BY 4.0)</small>
+  </div>
   <div id="toast" role="status" hidden></div>
   <div id="paused" role="alert" hidden></div>
   <aside id="card" class="sheet" hidden aria-live="polite"></aside>

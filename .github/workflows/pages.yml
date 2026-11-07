@@ -28,6 +28,12 @@ jobs:
       - uses: actions/checkout@v7
 
       # pid.cz RSS nemá CORS, prohlížeč ho nenačte → převedeme ho na web/alerts.json
+      # tarifní pásma (IPR Praha) se mění zřídka: obnovit jen při pushi / ručním spuštění;
+      # při chybě zůstane web/zones.json z repa
+      - name: Refresh tariff zones
+        if: github.event_name != 'schedule'
+        run: python3 scripts/fetch_zones.py web/zones.json || echo "::warning::tariff zones refresh failed, keeping web/zones.json from the repo"
+
       - name: Fetch PID alerts
         run: python3 scripts/fetch_alerts.py web/alerts.json || echo '{"items":[],"errors":["fetch failed"]}' > web/alerts.json
 
