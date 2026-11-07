@@ -82,11 +82,20 @@
   const typedLines = () => $lines.value.split(/[\s,;]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
 
   function renderChips() {
+    // trvalá poznámka u linek, které teď nejedou (zastávky z jízdního řádu)
+    const $note = document.getElementById("line-note");
+    const idle = chips.filter((l) => lineData?.get(l)?.static && ![...vehicles.values()].some((v) => routeKey(v.props) === l));
+    $note.hidden = !idle.length;
+    $note.textContent = idle.length ? `${idle.length === 1 ? "Linka" : "Linky"} ${idle.join(", ")} teď ${idle.length === 1 ? "nejede" : "nejedou"} – zastávky a trasa podle jízdního řádu.` : "";
     $chips.replaceChildren(...chips.map((line) => {
       const sample = [...vehicles.values()].find((v) => String(v.props.gtfs_route_short_name).toUpperCase() === line);
       const btn = h("button", { type: "button", "aria-label": `Odebrat linku ${line}`, title: "Odebrat" }, "×");
       btn.addEventListener("click", () => { removeChip(line); $lines.focus(); });
-      return h("li", { class: "chip", style: sample ? `--c:${colorFor(sample.props)}` : null }, h("span", null, line), btn);
+      const st = lineData.get(line);
+      const color = sample ? colorFor(sample.props) : st?.color;
+      const isStatic = !sample && st?.static;
+      return h("li", { class: `chip${isStatic ? " static" : ""}`, style: color ? `--c:${color}` : null,
+        title: isStatic ? `Linka ${line} teď nejede – zastávky a trasa podle jízdního řádu` : null }, h("span", null, line), btn);
     }));
   }
 
@@ -1717,13 +1726,58 @@
     }
   }
 
-  async function ensureLine(line) {
+  // linky, které právě nejedou: zastávky a trasa z jízdního řádu (lines/*.json, generuje scripts/build_lines.py)
+  let linesIndexP = null;
+  function linesIndex() {
+    linesIndexP ??= fetch("lines/index.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    return linesIndexP;
+  }
+
+  async function loadStaticLine(line, d) {
+    const idx = await linesIndex();
+    const file = idx?.lines?.[line];
+    if (!file) return false;
+    const data = await fetch(`lines/${file}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!data?.directions?.length) return false;
+    d.static = true;
+    d.attribution = idx.attribution;
+    d.trips = data.directions.map((dir) => ({
+      trip: null,
+      headsign: dir.headsign,
+      shape: buildShape((dir.shape || []).map(([lat, lon]) => ({ geometry: { coordinates: [lon, lat] } }))),
+      stops: dir.stops.map((st) => ({ name: st.name, node: st.node, zone: st.zone, lat: st.lat, lng: st.lon })),
+    }));
+    d.color = colorFor({ route_type: data.directions[0].type || data.type, gtfs_route_short_name: line });
+    if (d.attribution) map.attributionControl.addAttribution(d.attribution);
+    return true;
+  }
+
+  /** souběžná volání pro tutéž linku sdílí jeden běh (hledání čeká na načtení zastávek) */
+  const linePromises = new Map();
+  function ensureLine(line) {
+    if (linePromises.has(line)) return linePromises.get(line);
+    const pr = loadLine(line).finally(() => linePromises.delete(line));
+    linePromises.set(line, pr);
+    return pr;
+  }
+
+  async function loadLine(line) {
     let d = lineData.get(line);
     if (d && (d.loading || d.state === "ready")) return;
     d = d || { state: "loading", loading: false, trips: [], sigs: new Set(), tried: new Set(), color: null };
     lineData.set(line, d);
     const candidates = [...(lineTrips.get(line) || [])].filter((t) => !d.tried.has(t));
-    if (!candidates.length) { d.state = d.trips.length ? "ready" : "notrips"; drawLineStops(); return; }
+    if (!candidates.length && !d.trips.length) {
+      // nic nejede → jízdní řád
+      d.loading = true;
+      const ok = await loadStaticLine(line, d);
+      d.loading = false;
+      d.state = ok ? "ready" : "notrips";
+      renderChips();
+      drawLineStops();
+      return;
+    }
+    if (!candidates.length) { d.state = "ready"; drawLineStops(); return; }
     d.loading = true;
     for (const trip of candidates) {
       if (d.trips.length >= 2 || d.tried.size >= MAX_TRIPS_PER_LINE || !chips.includes(line)) break;
@@ -1760,6 +1814,7 @@
         if (e.status === 429) break; // přetížení: zkusíme při další obnově
       }
     }
+    if (!d.trips.length && (await loadStaticLine(line, d))) renderChips();
     d.loading = false;
     d.state = d.trips.length ? "ready" : "none";
     drawLineStops();
@@ -1775,7 +1830,9 @@
       if (!d) continue;
       for (const t of d.trips) {
         if (t.shape) {
-          L.polyline(t.shape.coords.map(([lng, lat]) => [lat, lng]), { pane: "lines", color: d.color, weight: 4, opacity: 0.45, interactive: false })
+          L.polyline(t.shape.coords.map(([lng, lat]) => [lat, lng]), {
+            pane: "lines", color: d.color, weight: 4, opacity: 0.45, interactive: false, dashArray: d.static ? "8 7" : null,
+          })
             .addTo(lineStopsLayer);
         }
         for (const s of t.stops) {
@@ -1801,7 +1858,11 @@
 
   function syncLineStops() {
     for (const line of chips) {
-      const d = lineData.get(line);
+      let d = lineData.get(line);
+      if (d?.static && !d.loading && (lineTrips.get(line)?.size || 0) > 0) {
+        lineData.delete(line); // linka se rozjela → raději živá data
+        d = null;
+      }
       if (!d || ((d.state === "notrips" || d.state === "none") && [...(lineTrips.get(line) || [])].some((t) => !d.tried.has(t)))) {
         if (d) d.state = "loading";
         ensureLine(line);
@@ -1846,6 +1907,13 @@
       if (stopPanel !== sp || sp.mode !== mode) return;
       sp.data = data;
       sp.error = null;
+      sp.next = undefined;
+      const wanted = (dep) => sp.lines?.includes(String(dep.route?.short_name).toUpperCase());
+      if (mode === "departures" && sp.lines?.length && !(data.departures || []).some(wanted)) {
+        // hledaná linka v příštích 90 min neodjíždí → nejbližší spoj v příštích 6 h
+        const later = await apiFetch("/v2/pid/departureboards", [["aswIds[]", sp.node], ["mode", "departures"], ["limit", "40"], ["minutesAfter", "360"]]).catch(() => null);
+        if (stopPanel === sp) sp.next = (later?.departures || []).find(wanted) || null;
+      }
     } catch (e) {
       if (stopPanel === sp) sp.error = friendlyError(e);
     } finally {
@@ -1899,8 +1967,15 @@
     if (!sp.node) list = h("div", { class: "vc-msg" }, "U této zastávky chybí identifikátor, odjezdy nelze načíst.");
     else if (sp.error && !sp.data) list = h("div", { class: "vc-msg" }, `Nepodařilo se načíst. ${sp.error}`);
     else if (!sp.data) list = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
-    else if (!deps.length) list = h("div", { class: "vc-msg" }, sp.mode === "arrivals" ? "V příštích 90 minutách sem nic nepřijede." : "V příštích 90 minutách odsud nic neodjede.",
-      !sp.all && sp.lines?.length ? " Zkus „všechny linky“." : "");
+    else if (!deps.length) {
+      const nx = sp.next, ts = nx?.departure_timestamp?.predicted || nx?.departure_timestamp?.scheduled;
+      list = h("div", { class: "vc-msg" },
+        sp.mode === "arrivals" ? "V příštích 90 minutách sem nic nepřijede." : "V příštích 90 minutách odsud nic neodjede.",
+        nx && ts ? h("div", { class: "sp-next" }, "Nejbližší spoj linky ", h("b", null, nx.route?.short_name), " odjíždí ",
+          h("b", null, new Date(ts).toLocaleString("cs-CZ", { weekday: "short", hour: "2-digit", minute: "2-digit" })), ` (směr ${nx.trip?.headsign || "?"}).`) : null,
+        nx === null ? h("div", { class: "sp-next" }, `Linka ${sp.lines.join(", ")} odsud v příštích 6 hodinách nejede.`) : null,
+        !sp.all && sp.lines?.length ? " Zkus „všechny linky“." : "");
+    }
     else list = h("ul", { class: "vc-deps" }, deps.slice(0, 25).map((dep) => boardRow(dep, sp.mode)));
 
     $card.replaceChildren(h("div", { class: "vc", style: "--c:#334155" },
@@ -1982,7 +2057,17 @@
     }
     if (seq !== locateSeq || [...lineFilter].sort().join(", ") !== key) return; // mezitím jiný filtr
     if (!pts.length) {
-      setStatus(`Linka ${key} teď v datech není (nejede, nebo je to překlep).`, false, true);
+      // nejede → zkusit jízdní řád (zastávky a trasa linky)
+      const lines = [...lineFilter];
+      await Promise.all(lines.map((l) => ensureLine(l)));
+      if (seq !== locateSeq) return;
+      const stat = lines.flatMap((l) => (lineData.get(l)?.static ? lineData.get(l).trips.flatMap((t) => t.stops) : []));
+      if (stat.length) {
+        map.fitBounds(L.latLngBounds(stat.map((x) => [x.lat, x.lng])), { maxZoom: 15, padding: [40, 40] });
+        setStatus(`Linka ${key} teď nejede – zastávky a trasa podle jízdního řádu.`, false, true);
+      } else {
+        setStatus(`Linka ${key} teď v datech není (nejede, nebo je to překlep).`, false, true);
+      }
       return;
     }
     const bounds = L.latLngBounds(pts);

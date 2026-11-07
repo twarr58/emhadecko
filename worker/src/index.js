@@ -184,7 +184,7 @@ async function stopBoard(env, q) {
   const mode = q.get("mode") || "departures";
   if (!BOARD_MODES.has(mode)) throw new HttpError(400, "invalid mode");
   const limit = intParam(q, "limit", 20, 1, 40);
-  const minutesAfter = intParam(q, "minutesAfter", 60, 1, 120);
+  const minutesAfter = intParam(q, "minutesAfter", 60, 1, 360); // až 6 h: "nejbližší spoj linky"
   const params = [...ids.sort().map((id) => ["aswIds[]", id]), ["mode", mode], ["limit", String(limit)],
     ["minutesAfter", String(minutesAfter)], ["preferredTimezone", "Europe_Prague"], ["skip[]", "untracked"]];
   const key = `board:${params.map((x) => x.join("=")).join("&")}`;
