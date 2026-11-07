@@ -342,6 +342,7 @@
     if (v) selRing.setStyle({ color: colorFor(v.props) });
     $card.replaceChildren(renderCard(id));
     drawTrip(id);
+    drawXferRoutes();
   }
 
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) closeCard(); });
@@ -716,7 +717,7 @@
       h("div", { class: "hint" }, "Klikni pro odjezdy ze zastávky"));
   }
 
-  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; nextStopMarker = null; }
+  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; nextStopMarker = null; clearXferRoutes(); }
 
   function openStop(seq, name) {
     stopView = { seq, name, data: null, error: null, loading: false };
@@ -859,13 +860,90 @@
     return { txt: `${m} min`, cls: n <= 1 ? "tight" : "" };
   }
 
+  // ---------- trasy přestupních spojů (#23): stahují se jen na vyžádání ----------
+  const xferRouteLayer = L.layerGroup().addTo(map);
+  const XFER_PIN_ALL = 5; // "Ukázat trasy přestupů" připne prvních N
+  let xferPinned = new Set(); // trip_id připnutých tras
+  let xferHover = null; // trip_id trasy pod myší
+  let xferHoverTimer = null;
+  /** trip_id → {color, headsign, label} pro vykreslení */
+  const xferInfo = new Map();
+  let xferRouteKey = "";
+
+  /** trasa spoje na vyžádání (sdílí cache a časový rozpočet s ostatními trasami) */
+  function requestTripShape(trip) {
+    if (!trip || shapes.has(trip)) return;
+    shapes.set(trip, "pending");
+    shapeQueue.unshift({ trip, vehicleId: null, force: true });
+    pumpShapes();
+  }
+
+  /** souřadnice trasy od bodu (projekce na trasu) do konce */
+  function shapeFrom(sh, latlng) {
+    const pr = project(sh, latlng);
+    if (pr.off > 400) return sh.coords.map(([lng, lat]) => [lat, lng]); // zastávka mimo trasu (jiný uzel): celá trasa
+    const start = pointAt(sh, pr.d);
+    const out = [[start.lat, start.lng]];
+    for (let i = 0; i < sh.coords.length; i++) if (sh.cum[i] > pr.d) out.push([sh.coords[i][1], sh.coords[i][0]]);
+    return out;
+  }
+
+  function clearXferRoutes() {
+    xferPinned = new Set();
+    xferHover = null;
+    clearTimeout(xferHoverTimer);
+    xferRouteLayer.clearLayers();
+    xferRouteKey = "";
+  }
+
+  function setXferHover(trip) {
+    clearTimeout(xferHoverTimer);
+    if (!trip) { xferHover = null; drawXferRoutes(); return; }
+    // krátká prodleva: projetí myší přes seznam nespustí stahování všech tras
+    xferHoverTimer = setTimeout(() => { xferHover = trip; requestTripShape(trip); drawXferRoutes(); }, 250);
+  }
+
+  function toggleXferPin(trip) {
+    const next = new Set(xferPinned);
+    if (next.has(trip)) next.delete(trip); else { next.add(trip); requestTripShape(trip); }
+    xferPinned = next;
+    drawXferRoutes();
+    if (openId) refreshCard(openId);
+  }
+
+  function drawXferRoutes() {
+    const id = openId;
+    const ctx = id && !stopView ? transferContext(id) : null;
+    const trips = ctx ? [...new Set([...xferPinned, ...(xferHover ? [xferHover] : [])])] : [];
+    const stopF = ctx ? stopFeatures(id).find((f) => f.properties.stop_sequence === ctx.stop.stop_sequence) : null;
+    const key = trips.map((t) => `${t}:${typeof shapes.get(t) === "object"}:${t === xferHover}`).join("|") + `|${ctx?.stop.stop_sequence}`;
+    if (key === xferRouteKey) return;
+    xferRouteKey = key;
+    xferRouteLayer.clearLayers();
+    if (!stopF) return;
+    const from = L.latLng(stopF.geometry.coordinates[1], stopF.geometry.coordinates[0]);
+    for (const trip of trips) {
+      const sh = shapes.get(trip);
+      const info = xferInfo.get(trip);
+      if (!sh || typeof sh !== "object" || !info) continue;
+      const pts = shapeFrom(sh, from);
+      if (pts.length < 2) continue;
+      const hot = trip === xferHover;
+      L.polyline(pts, { pane: "trip", color: "#fff", weight: hot ? 9 : 7, opacity: 0.9, interactive: false }).addTo(xferRouteLayer);
+      L.polyline(pts, { pane: "trip", color: info.color, weight: hot ? 5 : 4, opacity: 0.95, dashArray: "8 6", interactive: false }).addTo(xferRouteLayer);
+      L.marker(pts[pts.length - 1], { pane: "tripStops", interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0] }) })
+        .bindTooltip(`${info.label} → ${info.headsign}`, { permanent: true, direction: "right", offset: [6, 0], className: "xfer-end" })
+        .addTo(xferRouteLayer);
+    }
+  }
+
   function renderTransfers(id) {
     const ctx = transferContext(id);
     if (!ctx) return null;
     const t = transfers.get(transferKeyFor.get(id)) || null;
     const chips = h("div", { class: "tr-stops" }, ctx.stops.slice(0, 10).map((s) => {
       const b = h("button", { type: "button", class: s === ctx.stop ? "on" : null }, s.stop_name);
-      b.addEventListener("click", () => { transferSeq = s.stop_sequence; refreshCard(id); loadTransfers(id); });
+      b.addEventListener("click", () => { transferSeq = s.stop_sequence; clearXferRoutes(); refreshCard(id); loadTransfers(id); });
       return b;
     }));
     const when = !ctx.arr ? "" : ctx.arr < Date.now() ? "každou chvíli" : relTime(ctx.arr);
@@ -887,6 +965,13 @@
         const [m1, m2] = dep.departure_timestamp?.minutes || [];
         const a = minutesLabel(m1), b = m2 != null ? minutesLabel(m2) : null;
         const veh = [...vehicles.values()].find((x) => x.props.gtfs_trip_id === dep.trip?.id);
+        const trip = dep.trip?.id;
+        if (trip) xferInfo.set(trip, { color: c, headsign: dep.trip?.headsign || "", label: dep.route?.short_name || "" });
+        const pinned = trip && xferPinned.has(trip);
+        const pin = trip ? h("button", { type: "button", class: `tr-pin${pinned ? " on" : ""}`, "aria-pressed": pinned ? "true" : "false",
+          "aria-label": pinned ? `Skrýt trasu linky ${dep.route?.short_name}` : `Ukázat trasu linky ${dep.route?.short_name}`,
+          title: pinned ? "Skrýt trasu" : "Ukázat trasu na mapě" }, "⤳") : null;
+        pin?.addEventListener("click", (ev) => { ev.stopPropagation(); toggleXferPin(trip); });
         const li = h("li", { class: veh ? "has-veh" : null, title: veh ? "Ukázat vozidlo" : null },
           h("span", { class: "dl", style: `background:${c}` }, dep.route?.short_name),
           h("span", { class: "dh" },
@@ -898,7 +983,12 @@
             dep.substitution_text?.cs ? h("small", { class: "sub" }, dep.substitution_text.cs) : null),
           h("span", { class: "dt" },
             h("b", { class: a.cls || null }, a.txt),
-            b ? h("small", null, `pak ${b.txt}`) : null));
+            b ? h("small", null, `pak ${b.txt}`) : null),
+          pin);
+        if (trip) {
+          li.addEventListener("mouseenter", () => setXferHover(trip));
+          li.addEventListener("mouseleave", () => setXferHover(null));
+        }
         if (veh) {
           li.addEventListener("click", () => openCard(veh.id));
           // najetí na řádek zvýrazní vozidlo na mapě
@@ -912,7 +1002,20 @@
     const xfers = (data?.departures || []).filter((dep) => dep.trip?.id)
       .map((dep) => [dep.trip.id, minutesLabel((dep.departure_timestamp?.minutes || [])[0]).txt]);
     queueMicrotask(() => { if (openId === id && !stopView) setXferTrips(xfers); });
-    return h("section", { class: "vc-tr" }, head, chips, ...notes, list);
+    const firstTrips = (data?.departures || []).map((dep) => dep.trip?.id).filter(Boolean).slice(0, XFER_PIN_ALL);
+    let allBtn = null;
+    if (firstTrips.length) {
+      const allOn = firstTrips.every((t) => xferPinned.has(t));
+      allBtn = h("button", { type: "button", class: "vc-more tr-all" }, allOn ? "Skrýt trasy přestupů" : `Ukázat trasy přestupů na mapě (${firstTrips.length})`);
+      allBtn.addEventListener("click", () => {
+        xferPinned = allOn ? new Set() : new Set([...xferPinned, ...firstTrips]);
+        if (!allOn) firstTrips.forEach(requestTripShape);
+        drawXferRoutes();
+        refreshCard(id);
+      });
+    }
+    queueMicrotask(drawXferRoutes);
+    return h("section", { class: "vc-tr" }, head, chips, ...notes, list, allBtn);
   }
 
   function renderCard(id) {
@@ -1094,7 +1197,7 @@
       shapeInflight++;
       // trasa podle spoje (ne podle vozidla: to během dne přejíždí mezi spoji)
       apiFetch(`/v2/public/gtfs/trips/${encodeURIComponent(trip)}`, [["scopes", "shapes"]])
-        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); })
+        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); drawXferRoutes(); })
         .catch((e) => {
           if (e.status === 429) {
             shapes.delete(trip); // zkusíme později

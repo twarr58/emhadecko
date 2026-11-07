@@ -298,3 +298,18 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
 }
 .vc-stops .name .tag, .vc-stops .name .kind { flex: none; }
+
+/* trasy přestupních spojů (#23) */
+.tr-list li { grid-template-columns: auto 1fr auto auto; }
+.tr-pin {
+  width: 32px; height: 32px; padding: 0; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.tr-pin:hover { color: var(--fg); border-color: var(--fg); }
+.tr-pin.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tr-all { margin-top: 2px; }
+.leaflet-tooltip.xfer-end {
+  padding: 2px 7px; border: 0; border-radius: 6px; background: var(--bg); color: var(--fg);
+  font: 700 11px system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+.leaflet-tooltip.xfer-end::before { display: none; }
