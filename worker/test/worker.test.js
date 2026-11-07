@@ -24,7 +24,7 @@ beforeEach(() => {
     if (upstreamStatus !== 200) return new Response(`{"error":"nope","key":"${KEY}"}`, { status: upstreamStatus });
     const u = new URL(url);
     if (u.pathname === "/v2/public/vehiclepositions") return Response.json(feed);
-    if (u.pathname.startsWith("/v2/gtfs/trips/")) return Response.json({ trip_id: "x", stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", trip_id: "x", pickup_type: "0" }] });
+    if (u.pathname.startsWith("/v2/gtfs/trips/")) return Response.json({ trip_id: "x", stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", trip_id: "x", pickup_type: "0", drop_off_type: "3" }] });
     return Response.json({ ok: true, path: u.pathname, search: u.search });
   };
 });
@@ -103,7 +103,7 @@ test("detail vozidla, zastávky spoje a odjezdy projdou s povolenými parametry"
   let r = await req("/v2/public/vehiclepositions/service-0-9273?scopes=info&scopes=stop_times&scopes=vehicle_descriptor");
   assert.equal(r.status, 200);
   r = await req("/v2/gtfs/trips/22_1_261106?includeStopTimes=true");
-  assert.deepEqual(await r.json(), { stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P" }] });
+  assert.deepEqual(await r.json(), { stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", pickup_type: "0", drop_off_type: "3" }] });
   r = await req(`/v2/public/departureboards?stopIds[]=${encodeURIComponent('{"0":["U1Z1P"]}')}&limit=12&minutesAfter=90`);
   assert.equal(r.status, 200);
   assert.equal(calls.length, 3);
@@ -139,4 +139,21 @@ test("přestupní tablo: povolené parametry projdou, ostatní 400", async () =>
     "/v4/pid/transferboards?aswId=1330&vehicleRegistrationNumber=1&routeType=0&limit=99",
   ]) assert.equal((await req(q)).status, 400, q);
   assert.equal(calls.length, 1);
+});
+
+test("trasa spoje: podle trip_id, jen scopes=shapes, dlouhá cache", async () => {
+  let r = await req("/v2/public/gtfs/trips/331_926_260627?scopes=shapes");
+  assert.equal(r.status, 200);
+  assert.equal(new URL(calls[0].url).pathname, "/v2/public/gtfs/trips/331_926_260627");
+  r = await req("/v2/public/gtfs/trips/331_926_260627?scopes=shapes");
+  assert.equal(calls.length, 1, "druhý dotaz jde z cache");
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627?scopes=stop_times")).status, 400);
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627")).status, 400);
+});
+
+test("detail vozidla se necachuje dlouho ani pro samotnou trasu (vozidlo mění spoje)", async () => {
+  await req("/v2/public/vehiclepositions/service-0-1?scopes=shapes");
+  _internal.cache.forEach((v) => { v.exp = Date.now() - 1; }); // simulace uplynutí 5 s
+  await req("/v2/public/vehiclepositions/service-0-1?scopes=shapes");
+  assert.equal(calls.length, 2);
 });

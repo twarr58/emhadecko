@@ -236,12 +236,41 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .tr-list .tag.ok { margin-left: 6px; font-size: 10px; padding: 0 5px; border-radius: 4px; background: var(--ok-bg); color: var(--ok); text-transform: uppercase; font-weight: 700; }
 .tr-list .dt b.tight { color: var(--major); }
 
-/* pozastaveno kvůli nečinnosti */
-#paused {
-  position: absolute; z-index: 1100; left: 50%; bottom: 28px; transform: translateX(-50%);
-  padding: 10px 16px; border: 0; border-radius: 999px; background: var(--fg); color: var(--bg);
-  font: 600 13px system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0,0,0,.3); cursor: pointer; max-width: calc(100vw - 32px);
+/* úsporný režim (toast) a pozastavení */
+#toast {
+  position: absolute; z-index: 1100; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(440px, calc(100vw - 32px));
+  box-sizing: border-box; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px;
+  background: #111827; color: #f9fafb; box-shadow: 0 8px 24px rgba(0,0,0,.3); font: 12px/1.4 system-ui, sans-serif;
 }
+#toast .ic { color: #fbbf24; font-size: 16px; line-height: 1; margin-top: 1px; }
+#toast .tx { flex: 1; min-width: 0; }
+#toast .tx div { color: #d1d5db; }
+#toast button { flex: none; min-height: 32px; border: 0; border-radius: 8px; padding: 6px 10px; background: #374151; color: #f9fafb; font: 600 12px system-ui, sans-serif; cursor: pointer; }
+#paused {
+  position: absolute; z-index: 1100; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(380px, calc(100vw - 32px));
+  box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 12px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); box-shadow: 0 10px 28px rgba(0,0,0,.3); font: 12px/1.4 system-ui, sans-serif;
+}
+#paused .pt { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+#paused .px { color: var(--muted); }
+#paused button { min-height: 44px; border: 0; border-radius: 10px; background: var(--fg); color: var(--bg); font: 700 13px system-ui, sans-serif; cursor: pointer; }
+.is-paused .leaflet-marker-pane, .is-paused .leaflet-overlay-pane { filter: grayscale(1); opacity: .55; }
+.live.slow { color: #d97706; }
+.live.paused { color: var(--muted); }
+
+/* zastávky na znamení / jen výstup / jen nástup */
+.kind { flex: none; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.kind.rq { background: #fff7ed; color: #9a3412; }
+.kind.ex, .kind.bd { background: #eff6ff; color: #1d4ed8; }
+@media (prefers-color-scheme: dark) { .kind.rq { background: #431407; color: #fdba74; } .kind.ex, .kind.bd { background: #172554; color: #93c5fd; } }
+.vc-where .push { margin-left: auto; }
+.vc-rq-hint { grid-column: 1 / -1; padding: 8px 10px; border-radius: 10px; background: #fff7ed; color: #7c2d12; font-size: 12px; }
+@media (prefers-color-scheme: dark) { .vc-rq-hint { background: #431407; color: #fed7aa; } }
+.stop-tip .rqh { margin-top: 3px; font-size: 11px; color: #c2410c; }
+.rqm { width: 11px; height: 11px; box-sizing: border-box; margin: -5.5px 0 0 -5.5px; border: 2.5px solid var(--c); background: #fff; transform: rotate(45deg); cursor: pointer; }
+.rqm.next { background: var(--c); width: 14px; height: 14px; margin: -7px 0 0 -7px; }
+.rqm.sel { width: 16px; height: 16px; margin: -8px 0 0 -8px; border-width: 4px; }
+.rqm.passed { border-color: #9ca3af; }
 
 /* vozidla přestupních spojů */
 .veh.dim { opacity: .28; }
@@ -255,3 +284,8 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .hot .veh .badge { transform: translate(-50%, -50%) scale(1.6); animation: none; box-shadow: 0 0 0 2px #fff, 0 0 0 6px #22c55e, 0 0 22px 10px rgba(34,197,94,.8); }
 @keyframes xfer-glow { 50% { box-shadow: 0 0 0 2px #fff, 0 0 0 5px #22c55e, 0 0 6px 2px rgba(34,197,94,.3); } }
 .tr-list .onmap { color: #22c55e; font-size: 11px; }
+
+/* dlouhý název zastávky: zkrátit text, štítek (PŘÍŠTÍ/ZDE/KONEČNÁ) nechat celý */
+.vc-stops .name { display: flex; align-items: center; min-width: 0; }
+.vc-stops .name .nt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vc-stops .name .tag { flex: none; }

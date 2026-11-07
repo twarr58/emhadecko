@@ -4,7 +4,7 @@
  * Vrstvy ochrany:
  *  1. klíč je jen v secretu GOLEMIO_API_KEY, nikdy se nevrací ani neloguje
  *  2. allowlist: jen GET a jen endpointy, které stránka používá, s validací parametrů
- *     (polohy, detail vozidla, zastávky spoje, odjezdy, přestupní tablo)
+ *     (polohy, detail vozidla, trasa a zastávky spoje, odjezdy, přestupní tablo)
  *  3. CORS + kontrola Origin: odpovídá jen povoleným originům (ALLOWED_ORIGINS)
  *  4. cache: polohy se z Golemia stahují max. 1× za POSITIONS_TTL pro všechny klienty
  *     a výřez mapy se filtruje tady → zneužití nevyčerpá limit klíče
@@ -95,11 +95,21 @@ async function vehicleDetail(env, q, vehicleId) {
   if (!ID_RE.test(vehicleId)) throw new HttpError(400, "invalid vehicle id");
   const scopes = [...new Set(q.getAll("scopes"))].sort();
   if (!scopes.length || scopes.some((s) => !SCOPES.has(s))) throw new HttpError(400, "invalid scopes");
-  // samotná trasa se nemění, zbytek je realtime
-  const ttl = scopes.length === 1 && scopes[0] === "shapes" ? 3_600_000 : 5_000;
-  const body = await cached(`veh:${vehicleId}:${scopes}`, ttl,
+  // vše vázané na vozidlo je realtime: vozidlo během dne přejíždí mezi spoji,
+  // takže ani trasu nejde cachovat déle (trasu spoje stránka bere z tripShape)
+  const body = await cached(`veh:${vehicleId}:${scopes}`, 5_000,
     () => upstream(env, `/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, scopes.map((s) => ["scopes", s])));
-  return { body, maxAge: ttl > 5_000 ? 3600 : 5 };
+  return { body, maxAge: 5 };
+}
+
+// trasa spoje podle trip_id: statická data jízdního řádu, dají se cachovat dlouho
+async function tripShape(env, q, tripId) {
+  if (!ID_RE.test(tripId)) throw new HttpError(400, "invalid trip id");
+  const scopes = q.getAll("scopes");
+  if (scopes.length !== 1 || scopes[0] !== "shapes") throw new HttpError(400, "only scopes=shapes is supported");
+  const body = await cached(`tripshape:${tripId}`, 6 * 3_600_000,
+    () => upstream(env, `/v2/public/gtfs/trips/${encodeURIComponent(tripId)}`, [["scopes", "shapes"]]));
+  return { body, maxAge: 3600 };
 }
 
 async function tripStops(env, q, tripId) {
@@ -107,8 +117,12 @@ async function tripStops(env, q, tripId) {
   if (q.get("includeStopTimes") !== "true") throw new HttpError(400, "only includeStopTimes=true is supported");
   const body = await cached(`trip:${tripId}`, 6 * 3_600_000, async () => {
     const d = await upstream(env, `/v2/gtfs/trips/${encodeURIComponent(tripId)}`, [["includeStopTimes", "true"]]);
-    // stránka potřebuje jen pořadí a ID zastávek
-    return { stop_times: (d?.stop_times || []).map((st) => ({ stop_sequence: st.stop_sequence, stop_id: st.stop_id })) };
+    // stránka potřebuje pořadí, ID zastávky a typ nástupu/výstupu (3 = na znamení)
+    return {
+      stop_times: (d?.stop_times || []).map((st) => ({
+        stop_sequence: st.stop_sequence, stop_id: st.stop_id, pickup_type: st.pickup_type, drop_off_type: st.drop_off_type,
+      })),
+    };
   });
   return { body, maxAge: 3600 };
 }
@@ -153,6 +167,7 @@ function route(path) {
   let m;
   if (path === "/v2/public/vehiclepositions") return (env, q) => vehiclePositions(env, q);
   if ((m = /^\/v2\/public\/vehiclepositions\/([^/]+)$/.exec(path))) return (env, q) => vehicleDetail(env, q, decodeURIComponent(m[1]));
+  if ((m = /^\/v2\/public\/gtfs\/trips\/([^/]+)$/.exec(path))) return (env, q) => tripShape(env, q, decodeURIComponent(m[1]));
   if ((m = /^\/v2\/gtfs\/trips\/([^/]+)$/.exec(path))) return (env, q) => tripStops(env, q, decodeURIComponent(m[1]));
   if (path === "/v2/public/departureboards") return (env, q) => departures(env, q);
   if (path === "/v4/pid/transferboards") return (env, q) => transferBoards(env, q);
