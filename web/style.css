@@ -373,19 +373,6 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 #zones-legend .sw.a { background: rgba(124,58,237,.25); border: 1px dashed #475569; }
 #zones-legend .sw.b { background: rgba(8,145,178,.25); border: 1px dashed #475569; }
 
-/* orientační cena jízdenky (#19) */
-.vc-fare { margin: 6px 14px 0; padding: 10px 12px; border-radius: 10px; background: var(--soft); display: flex; flex-direction: column; gap: 6px; }
-.vc-fare h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.fare-picks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.fare-pick { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11px; color: var(--muted); }
-.fare-pick select { min-width: 0; min-height: 32px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font: 12px system-ui, sans-serif; }
-.fare-zones { font-size: 12px; color: var(--muted); }
-.fare-zones b { color: var(--fg); }
-.fare-main { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }
-.fare-main b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.fare-sub, .fare-who { font-size: 12px; color: var(--muted); }
-.fare-note { font-size: 10px; color: var(--muted); }
-.fare-note a { color: inherit; }
 
 /* panel zastávky: odjezdy / příjezdy (#25) */
 .sp-ic { font-size: 22px; }
@@ -404,3 +391,4 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .chip.static button { background: rgba(0,0,0,.08); color: var(--c, #6b7280); }
 .sp-next { margin-top: 6px; color: var(--fg); }
 #line-note { margin-top: 4px; font-size: 11px; color: var(--muted); }
+#zones-legend .here { font-weight: 700; color: #1d4ed8; }
