@@ -19,6 +19,7 @@ beforeEach(() => {
   calls = [];
   upstreamStatus = 200;
   _internal.cache.clear();
+  _internal.resetCooldown();
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), key: init?.headers?.["X-Access-Token"] });
     if (upstreamStatus !== 200) return new Response(`{"error":"nope","key":"${KEY}"}`, { status: upstreamStatus });
@@ -156,4 +157,31 @@ test("detail vozidla se necachuje dlouho ani pro samotnou trasu (vozidlo mění 
   _internal.cache.forEach((v) => { v.exp = Date.now() - 1; }); // simulace uplynutí 5 s
   await req("/v2/public/vehiclepositions/service-0-1?scopes=shapes");
   assert.equal(calls.length, 2);
+});
+
+test("429 od Golemia: poslední platná data, pauza na Golemio, označení zdroje", async () => {
+  // 1) úspěšné načtení poloh
+  let r = await req("/v2/public/vehiclepositions");
+  assert.equal(r.status, 200);
+  // 2) cache vyprší, Golemio vrací 429 → dostaneme poslední platná data (ne chybu)
+  _internal.cache.forEach((v) => { v.exp = Date.now() - 1; });
+  upstreamStatus = 429;
+  r = await req("/v2/public/vehiclepositions");
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).features.length, 2);
+  // 3) během pauzy se na Golemio nevolá; endpoint bez starých dat vrátí 429 se zdrojem "upstream"
+  const before = calls.length;
+  r = await req("/v2/public/gtfs/trips/1_2_3?scopes=shapes");
+  assert.equal(r.status, 429);
+  assert.equal(r.headers.get("X-Limit-Source"), "upstream");
+  assert.ok(Number(r.headers.get("Retry-After")) >= 1);
+  assert.match(r.headers.get("Access-Control-Expose-Headers"), /X-Limit-Source/);
+  assert.equal(calls.length, before, "v pauze žádný dotaz na Golemio");
+});
+
+test("rate limit Workeru je označený jako zdroj worker", async () => {
+  const limited = { ...env, LIMITER: { limit: async () => ({ success: false }) } };
+  const r = await worker.fetch(new Request("https://w.example/v2/public/vehiclepositions", { headers: { Origin: ORIGIN } }), limited);
+  assert.equal(r.status, 429);
+  assert.equal(r.headers.get("X-Limit-Source"), "worker");
 });

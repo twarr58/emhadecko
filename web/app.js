@@ -78,9 +78,25 @@
     applyFilter();
   });
 
-  function setStatus(text, isError = false) {
+  function setStatus(text, isError = false, isWarn = false) {
     $status.textContent = text;
     $status.classList.toggle("err", isError);
+    $status.classList.toggle("warn", isWarn);
+  }
+
+  /** chyba z HTTP odpovědi; u 429 nese zdroj limitu (worker/upstream) a Retry-After v sekundách */
+  function httpError(res) {
+    const e = new Error(`HTTP ${res.status}`);
+    e.status = res.status;
+    e.retryAfter = Number(res.headers.get("Retry-After")) || 0;
+    e.source = res.headers.get("X-Limit-Source") || (CFG.proxy ? "worker" : "upstream");
+    return e;
+  }
+
+  /** srozumitelný text chyby pro kartu */
+  function friendlyError(e) {
+    if (e?.status === 429) return "PID API je teď chvíli přetížené, zkusím to znovu za pár sekund.";
+    return e?.message || "Neznámá chyba.";
   }
 
   // ---------- API klíč ----------
@@ -411,11 +427,14 @@
       for (const s of ["info", "stop_times", "vehicle_descriptor"]) url.searchParams.append("scopes", s);
       const key = getKey();
       const res = await fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) }, cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw httpError(res);
       d.data = await res.json();
       d.error = null;
     } catch (e) {
-      d.error = e.message;
+      d.error = friendlyError(e);
+      d.limited = e.status === 429;
+      // přetížení: zkusit znovu, dokud je karta otevřená
+      if (e.status === 429) setTimeout(() => { if (openId === id) loadDetail(id); }, Math.max(5, e.retryAfter || 10) * 1000);
     } finally {
       d.loading = false;
       refreshCard(id);
@@ -545,7 +564,7 @@
     for (const [k, v] of params || []) url.searchParams.append(k, v);
     const key = getKey();
     return fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) } })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+      .then((r) => (r.ok ? r.json() : Promise.reject(httpError(r))));
   }
 
   async function loadTripStops(trip) {
@@ -726,7 +745,7 @@
       sv.data = (groups || []).flat();
       sv.error = null;
     } catch (e) {
-      sv.error = e.message;
+      sv.error = friendlyError(e);
     } finally {
       sv.loading = false;
       if (stopView === sv) refreshCard(openId);
@@ -825,7 +844,8 @@
       const data = await apiFetch("/v4/pid/transferboards", params);
       transfers.set(key, { data, error: null, loading: false, at: Date.now() });
     } catch (e) {
-      transfers.set(key, { data: t.data || null, error: e.message, loading: false, at: Date.now() });
+      // při přetížení zkusit dřív než za běžných 30 s
+      transfers.set(key, { data: t.data || null, error: friendlyError(e), loading: false, at: Date.now() - (e.status === 429 ? TRANSFER_TTL - 10_000 : 0) });
     }
     if (transfers.size > 60) transfers.delete(transfers.keys().next().value);
     refreshCard(id);
@@ -947,7 +967,7 @@
     if (lineAlerts) status.append(lineAlerts);
 
     let body;
-    if (d?.error && !data) body = h("div", { class: "vc-msg" }, "Detail spoje se nepodařilo načíst.");
+    if (d?.error && !data) body = h("div", { class: "vc-msg" }, d.limited ? "Detail spoje se načte za chvíli – PID API je teď přetížené." : "Detail spoje se nepodařilo načíst.");
     else if (!data) body = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
     else body = renderStops(info, data.stop_times, state) || h("div", { class: "vc-msg" }, "Jízdní řád spoje není k dispozici.");
 
@@ -974,13 +994,28 @@
   // Trasa se stahuje jen pro vozidla viditelná při přiblížení (štítky), cachuje se podle spoje
   // a stahování je omezené kvůli limitu API klíče.
   const SHAPE_CONCURRENCY = 2;
-  const SHAPE_BUDGET_PER_POLL = 8;
+  // nejvýš SHAPE_RATE tras za SHAPE_WINDOW_MS (rovnoměrně, ne v nárazech po posunu mapy)
+  const SHAPE_RATE = 6;
+  const SHAPE_WINDOW_MS = 10_000;
   const SHAPE_MAX_OFFSET = 60; // m — dál od trasy už polohu na trasu nepřichytáváme
   /** @type {Map<string, object|"pending"|"none">} */
   const shapes = new Map();
   const shapeQueue = [];
   let shapeInflight = 0;
-  let shapeBudget = SHAPE_BUDGET_PER_POLL;
+  let shapeTokens = SHAPE_RATE;
+  let shapeTokensAt = Date.now();
+  let shapePauseUntil = 0; // po 429 chvíli trasy nestahovat
+  let shapePumpTimer = null;
+
+  /** vezme token z rozpočtu, nebo vrátí, za kolik ms bude další */
+  function shapeToken() {
+    const now = Date.now();
+    shapeTokens = Math.min(SHAPE_RATE, shapeTokens + ((now - shapeTokensAt) * SHAPE_RATE) / SHAPE_WINDOW_MS);
+    shapeTokensAt = now;
+    if (now < shapePauseUntil) return shapePauseUntil - now;
+    if (shapeTokens >= 1) { shapeTokens -= 1; return 0; }
+    return Math.ceil(((1 - shapeTokens) * SHAPE_WINDOW_MS) / SHAPE_RATE);
+  }
 
   const M_PER_DEG_LAT = 110540;
   function toXY(lat, lng, kx) { return [lng * kx, lat * M_PER_DEG_LAT]; }
@@ -1047,17 +1082,25 @@
   }
 
   function pumpShapes() {
-    while (shapeInflight < SHAPE_CONCURRENCY && shapeQueue.length && (shapeBudget > 0 || shapeQueue[0].force)) {
-      const { trip, vehicleId, force } = shapeQueue.shift();
+    clearTimeout(shapePumpTimer);
+    while (shapeInflight < SHAPE_CONCURRENCY && shapeQueue.length) {
+      const { trip, vehicleId, force } = shapeQueue[0];
       const v = vehicles.get(vehicleId);
       // vozidlo mezitím zmizelo z výřezu nebo přejelo na jiný spoj → trasu teď nepotřebujeme
-      if (!force && (!v || v.mode !== "label" || v.props.gtfs_trip_id !== trip)) { shapes.delete(trip); continue; }
+      if (!force && (!v || v.mode !== "label" || v.props.gtfs_trip_id !== trip)) { shapeQueue.shift(); shapes.delete(trip); continue; }
+      const wait = shapeToken();
+      if (wait > 0) { shapePumpTimer = setTimeout(pumpShapes, wait); return; }
+      shapeQueue.shift();
       shapeInflight++;
-      if (!force) shapeBudget--;
       // trasa podle spoje (ne podle vozidla: to během dne přejíždí mezi spoji)
       apiFetch(`/v2/public/gtfs/trips/${encodeURIComponent(trip)}`, [["scopes", "shapes"]])
         .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); })
-        .catch((e) => { if (/429/.test(e.message)) shapes.delete(trip); else shapes.set(trip, "none"); })
+        .catch((e) => {
+          if (e.status === 429) {
+            shapes.delete(trip); // zkusíme později
+            shapePauseUntil = Date.now() + Math.max(5, e.retryAfter || 10) * 1000;
+          } else shapes.set(trip, "none");
+        })
         .finally(() => { shapeInflight--; pumpShapes(); });
     }
   }
@@ -1300,10 +1343,13 @@
       await askKey();
       throw new Error(`HTTP ${res.status}: neautorizováno`);
     }
-    if (res.status === 429) throw new Error("Překročen limit požadavků (429), zkusím později.");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw httpError(res);
+    lastFetchBounds = map.getBounds().pad(0.2);
     return res.json();
   }
+
+  let backoffMs = 0; // po 429 prodlužujeme interval (20 → 40 → 60 s)
+  let lastFetchBounds = null; // výřez, který pokrývají naposledy stažená data
 
   async function refresh() {
     clearTimeout(timer);
@@ -1318,14 +1364,21 @@
       for (const [id, v] of vehicles) {
         if (!seen.has(id) && openId !== id) removeVehicle(v);
       }
-      shapeBudget = SHAPE_BUDGET_PER_POLL;
       pumpShapes();
       if (computeFewMode() !== fewMode) syncAll();
+      backoffMs = 0;
       lastOk = new Date();
       updateCount();
       startAnimation();
     } catch (e) {
-      if (e.name !== "AbortError") {
+      if (e.name === "AbortError") {
+        // zrušeno novějším požadavkem
+      } else if (e.status === 429) {
+        backoffMs = Math.min(60_000, Math.max(backoffMs * 2, (e.retryAfter || 0) * 1000, 20_000));
+        const at = lastOk ? ` · data z ${lastOk.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}` : "";
+        const why = e.source === "worker" ? "Moc požadavků z tohoto zařízení" : "PID API je teď přetížené";
+        setStatus(`${why}${at} · další pokus za ${Math.round(backoffMs / 1000)} s`, false, true);
+      } else {
         console.error(e);
         setStatus(`Chyba: ${e.message}`, true);
       }
@@ -1440,7 +1493,7 @@
       setLive("slow");
       showSlowToast();
     }
-    timer = setTimeout(refresh, currentPollMs());
+    timer = setTimeout(refresh, Math.max(currentPollMs(), backoffMs));
   }
 
   map.on("zoomend", () => {
@@ -1450,10 +1503,16 @@
   });
 
   let moveTimer = null;
+  let lastMoveRefresh = 0;
+  const MOVE_REFRESH_MIN_MS = 3000;
   map.on("moveend", () => {
     syncAll();
     clearTimeout(moveTimer);
-    moveTimer = setTimeout(refresh, 400);
+    // stažená data (výřez + 20 % rezerva) nový pohled pokrývají → počkat na běžnou obnovu
+    if (lastFetchBounds && lastFetchBounds.contains(map.getBounds())) return;
+    if (backoffMs) return; // po 429 nepřidávat další požadavky
+    const wait = Math.max(400, lastMoveRefresh + MOVE_REFRESH_MIN_MS - Date.now());
+    moveTimer = setTimeout(() => { lastMoveRefresh = Date.now(); refresh(); }, wait);
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) clearTimeout(timer);
