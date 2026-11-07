@@ -388,6 +388,7 @@
     try {
       const url = new URL(`/v2/public/vehiclepositions/${encodeURIComponent(id)}`, CFG.apiBase);
       requestShape(v, true); // trasa otevřeného spoje (podle trip_id)
+      loadTripStops(v.props.gtfs_trip_id); // typy zastávek (na znamení) a jejich ID
       for (const s of ["info", "stop_times", "vehicle_descriptor"]) url.searchParams.append("scopes", s);
       const key = getKey();
       const res = await fetch(url, { headers: { Accept: "application/json", ...(key ? { "X-Access-Token": key } : {}) }, cache: "no-store" });
@@ -419,10 +420,10 @@
     const { feats, idx } = stopContext(info, stopTimes);
     if (!feats.length) return null;
     const cur = feats[idx], next = feats[idx + 1];
-    if (state === "at_stop" && cur) return [null, cur.stop_name]; // "Ve stanici" už je ve stavu vedle
-    if ((state === "before_track" || state === "before_track_delayed") && feats[0]) return ["Odjíždí z", feats[0].stop_name];
-    if (next) return ["Příští zastávka", next.stop_name];
-    if (cur) return ["Poslední zastávka", cur.stop_name];
+    if (state === "at_stop" && cur) return [null, cur.stop_name, cur.stop_sequence]; // "Ve stanici" už je ve stavu vedle
+    if ((state === "before_track" || state === "before_track_delayed") && feats[0]) return ["Odjíždí z", feats[0].stop_name, feats[0].stop_sequence];
+    if (next) return ["Příští zastávka", next.stop_name, next.stop_sequence];
+    if (cur) return ["Poslední zastávka", cur.stop_name, cur.stop_sequence];
     return null;
   }
 
@@ -455,7 +456,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[p.role];
       const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
@@ -479,7 +480,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[role];
       const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag)),
+        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
         h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
       li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
       return li;
@@ -499,6 +500,26 @@
   let stopView = null;
   /** trip → Map(stop_sequence → stop_id) */
   const tripStops = new Map();
+  /** trip → Map(stop_sequence → {stop_id, pickup, dropoff}) – už načtené */
+  const tripStopsData = new Map();
+
+  /** typ zastávky podle GTFS pickup_type/drop_off_type: 3 = na znamení, 1 = nelze nastoupit/vystoupit */
+  function stopKind(id, seq) {
+    const trip = vehicles.get(id)?.props.gtfs_trip_id;
+    const st = tripStopsData.get(trip)?.get(Number(seq));
+    if (!st) return null;
+    if (st.pickup === 3 || st.dropoff === 3) return "request";
+    if (st.pickup === 1 && st.dropoff !== 1) return "exit";
+    if (st.dropoff === 1 && st.pickup !== 1) return "board";
+    return null;
+  }
+
+  function kindChip(kind, long = false) {
+    if (kind === "request") return h("span", { class: "kind rq", title: "Zastávka na znamení" }, long ? "× na znamení" : "×");
+    if (kind === "exit") return h("span", { class: "kind ex", title: "Jen pro výstup" }, "↓ jen výstup");
+    if (kind === "board") return h("span", { class: "kind bd", title: "Jen pro nástup" }, "↑ jen nástup");
+    return null;
+  }
 
   function apiFetch(path, params) {
     const url = new URL(path, CFG.apiBase);
@@ -511,7 +532,14 @@
   async function loadTripStops(trip) {
     if (!trip || tripStops.has(trip)) return tripStops.get(trip);
     const p = apiFetch(`/v2/gtfs/trips/${encodeURIComponent(trip)}`, [["includeStopTimes", "true"]])
-      .then((d) => new Map((d?.stop_times || []).map((st) => [Number(st.stop_sequence), st.stop_id])))
+      .then((d) => {
+        const m = new Map((d?.stop_times || []).map((st) => [Number(st.stop_sequence), {
+          stop_id: st.stop_id, pickup: Number(st.pickup_type ?? 0), dropoff: Number(st.drop_off_type ?? 0),
+        }]));
+        tripStopsData.set(trip, m);
+        if (openId && vehicles.get(openId)?.props.gtfs_trip_id === trip) { tripKey = ""; refreshCard(openId); }
+        return m;
+      })
       .catch(() => { tripStops.delete(trip); return null; });
     tripStops.set(trip, p);
     return p;
@@ -531,7 +559,7 @@
     const info = d.info || d;
     const sh = shapes.get(trip);
     const xferSeq = stopView ? null : transferContext(id)?.stop.stop_sequence;
-    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${xferSeq}|${typeof sh === "object"}`;
+    const key = `${trip}|${info.last_stop_sequence}|${stopView?.seq}|${xferSeq}|${typeof sh === "object"}|${tripStopsData.has(trip)}`;
     if (key === tripKey) {
       nextStopMarker?.getTooltip()?.update();
       return;
@@ -552,10 +580,20 @@
       const passed = seq < last || (seq === last && !atStop);
       const isNext = atStop ? seq === last : seq === nextSeq(id);
       const sel = stopView?.seq === seq || xferSeq === seq;
-      const m = L.circleMarker([lat, lng], {
-        pane: "tripStops", radius: sel ? 8 : isNext ? 7 : 5, weight: sel ? 4 : isNext ? 3 : 2.5,
-        color: passed ? "#9ca3af" : color, fillColor: isNext ? color : "#fff", fillOpacity: 1,
-      })
+      // zastávka na znamení: kosočtverec, ostatní kolečko
+      const m = stopKind(id, seq) === "request"
+        ? L.marker([lat, lng], {
+          pane: "tripStops", keyboard: false,
+          icon: L.divIcon({
+            className: "", iconSize: [0, 0],
+            html: `<div class="rqm${passed ? " passed" : ""}${isNext ? " next" : ""}${sel ? " sel" : ""}" style="--c:${color}"></div>`,
+          }),
+        })
+        : L.circleMarker([lat, lng], {
+          pane: "tripStops", radius: sel ? 8 : isNext ? 7 : 5, weight: sel ? 4 : isNext ? 3 : 2.5,
+          color: passed ? "#9ca3af" : color, fillColor: isNext ? color : "#fff", fillOpacity: 1,
+        });
+      m
         // obsah jako funkce → při každém zobrazení aktuální časy a "za X min"
         .bindTooltip(() => stopTip(id, seq, false), { direction: "top", offset: [0, -8], className: "stop-tip-wrap" })
         .on("click", () => openStop(seq, s.stop_name))
@@ -622,18 +660,21 @@
     // budoucí zastávka s časem v minulosti = predikce ještě nedohnala zpoždění
     const when = rtMs == null ? "" : !passed && rtMs < Date.now() ? "každou chvíli" : relTime(rtMs);
 
+    const kind = stopKind(id, seq);
     if (compact) {
       return h("div", { class: "stop-tip compact" },
-        h("b", null, s.stop_name), " · ", h("span", { class: "eta" }, here ? `odjíždí ${when}` : when));
+        h("b", null, s.stop_name), " · ", h("span", { class: "eta" }, here ? `odjíždí ${when}` : when),
+        kind ? " " : null, kindChip(kind, true));
     }
     const status = here ? "Vozidlo je ve stanici" : passed ? "Projeto" : seq === nextSeq(id) ? "Příští zastávka" : null;
     return h("div", { class: "stop-tip" },
-      status ? h("div", { class: "st" }, status) : null,
+      status || kind ? h("div", { class: "st" }, status, status && kind ? " " : null, kindChip(kind, true)) : null,
       h("div", { class: "nm" }, s.stop_name),
       h("div", { class: "big" }, passed ? `odjel ${when}` : here ? `odjíždí ${when}` : `přijede ${when}`),
       h("div", { class: "sm" },
         `${useDep ? "odjezd" : "příjezd"} ${hhmm(rt)}`,
         delayMin ? h("span", { class: delayMin > 0 ? "late" : "early" }, ` (jízdní řád ${hhmm(sched)}, ${delayMin > 0 ? "+" : ""}${delayMin} min)`) : " · podle jízdního řádu"),
+      kind === "request" && !passed ? h("div", { class: "rqh" }, "Chceš-li vystoupit, zmáčkni tlačítko.") : null,
       h("div", { class: "hint" }, "Klikni pro odjezdy ze zastávky"));
   }
 
@@ -658,7 +699,7 @@
     sv.loading = true;
     try {
       const ids = await loadTripStops(v.props.gtfs_trip_id);
-      const stopId = ids?.get(sv.seq);
+      const stopId = ids?.get(sv.seq)?.stop_id;
       if (!stopId) throw new Error("Zastávku se nepodařilo dohledat.");
       const groups = await apiFetch("/v2/public/departureboards", [
         ["stopIds[]", JSON.stringify({ 0: [stopId] })], ["limit", "12"], ["minutesAfter", "90"],
@@ -751,7 +792,7 @@
     const v = vehicles.get(id);
     if (!ctx || !v || !ctx.reg || ctx.routeType == null) return;
     const ids = await loadTripStops(v.props.gtfs_trip_id);
-    const asw = aswFromStopId(ids?.get(ctx.stop.stop_sequence));
+    const asw = aswFromStopId(ids?.get(ctx.stop.stop_sequence)?.stop_id);
     if (!asw) return;
     const key = `${asw}|${ctx.timeFrom || "now"}|${ctx.reg}|${ctx.routeType}`;
     const t = transfers.get(key) || {};
@@ -871,10 +912,16 @@
     );
     const where = data ? whereText(state, info, data.stop_times) : null;
     if (where) {
+      const kind = stopKind(id, where[2]);
       status.append(h("div", { class: `vc-where ${state === "at_stop" ? "at" : ""}` },
         h("span", { class: "pin" }),
         where[0] ? h("span", { class: "lbl" }, where[0]) : null,
-        h("b", null, where[1])));
+        h("b", null, where[1]),
+        kind ? h("span", { class: "push" }, kindChip(kind, true)) : null));
+      if (kind === "request" && where[0] === "Příští zastávka") {
+        status.append(h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
+          "Chceš-li vystoupit, zmáčkni tlačítko. Na zastávce dej řidiči znamení rukou."));
+      }
     }
 
     const lineAlerts = renderLineAlerts(p.gtfs_route_short_name);
@@ -1291,14 +1338,60 @@
     return "";
   }
 
+  // ---------- upozornění: úsporný režim (toast) a pozastavení (karta) ----------
+  const $toast = document.getElementById("toast");
+  const $live = document.getElementById("live");
+  let slowNotified = false;
+  let toastTimer = null;
+
+  function setLive(mode) {
+    $live.textContent = { live: "● live", slow: "● úspora", paused: "❙❙ pauza" }[mode];
+    $live.className = `live ${mode}`;
+  }
+
+  function hideToast() { clearTimeout(toastTimer); $toast.hidden = true; $toast.replaceChildren(); }
+
+  function showSlowToast() {
+    const btn = h("button", { type: "button" }, "Obnovit hned");
+    btn.addEventListener("click", activity);
+    $toast.replaceChildren(
+      h("span", { class: "ic", "aria-hidden": "true" }, "◷"),
+      h("div", { class: "tx" }, h("b", null, "Úsporný režim"),
+        h("div", null, "Chvíli tu nic neděláš, polohy obnovujeme jen každých 30 s.")),
+      btn);
+    $toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, 8000);
+  }
+
+  function showPaused() {
+    const btn = h("button", { type: "button" }, "Pokračovat v živém sledování");
+    btn.addEventListener("click", activity);
+    const at = lastOk ? lastOk.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }) : null;
+    $paused.replaceChildren(
+      h("div", { class: "pt" }, h("span", { class: "ic", "aria-hidden": "true" }, "❙❙"), h("b", null, "Načítání pozastaveno")),
+      h("div", { class: "px" }, "Hodinu tu nikdo nic nedělal, tak jsme stahování dat zastavili. ",
+        at ? `Polohy vozidel jsou z ${at} a neaktualizují se.` : "Polohy vozidel se neaktualizují."),
+      btn);
+    $paused.hidden = false;
+    map.getContainer().classList.add("is-paused");
+    setLive("paused");
+    hideToast();
+  }
+
   function activity() {
     const wasSlow = Date.now() - lastActivity >= IDLE_SLOW_MS;
     lastActivity = Date.now();
+    slowNotified = false;
     if (paused) {
       paused = false;
       $paused.hidden = true;
+      map.getContainer().classList.remove("is-paused");
+      setLive("live");
       refresh();
     } else if (wasSlow) {
+      hideToast();
+      setLive("live");
       refresh(); // z úsporného režimu hned zpátky na normální obnovu
     }
   }
@@ -1315,12 +1408,18 @@
   function schedule() {
     clearTimeout(timer);
     if (document.hidden) return;
-    if (Date.now() - lastActivity >= IDLE_PAUSE_MS) {
+    const idle = Date.now() - lastActivity;
+    if (idle >= IDLE_PAUSE_MS) {
       paused = true;
-      $paused.hidden = false;
       finishAnimations();
+      showPaused();
       setStatus("Pozastaveno kvůli nečinnosti");
       return;
+    }
+    if (idle >= IDLE_SLOW_MS && !slowNotified) {
+      slowNotified = true;
+      setLive("slow");
+      showSlowToast();
     }
     timer = setTimeout(refresh, currentPollMs());
   }

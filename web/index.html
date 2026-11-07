@@ -11,7 +11,7 @@
   <div id="map"></div>
 
   <aside id="panel">
-    <h1>emhadecko <span class="live">● live</span></h1>
+    <h1>emhadecko <span class="live" id="live">● live</span></h1>
     <div id="types"></div>
     <input id="lines" type="text" placeholder="Linky, např. 22, 9, A, 135" autocomplete="off">
     <div id="status">Načítám…</div>
@@ -19,7 +19,8 @@
     <button id="change-key" type="button" hidden>Změnit API klíč</button>
   </aside>
 
-  <button id="paused" type="button" hidden>⏸ Pozastaveno kvůli nečinnosti · klikni pro pokračování</button>
+  <div id="toast" role="status" hidden></div>
+  <div id="paused" role="alert" hidden></div>
   <aside id="card" class="sheet" hidden aria-live="polite"></aside>
   <aside id="alerts" class="sheet" hidden></aside>
 
