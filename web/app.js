@@ -466,6 +466,31 @@
     return null;
   }
 
+  // ---------- tarifní pásma (#16): zone_id "P", "0", "B", "1"… nebo víc na hranici ("2,3") ----------
+  const zonesOf = (s) => String(s?.zone_id ?? "").split(",").map((z) => z.trim()).filter(Boolean);
+  const zoneLabel = (s) => zonesOf(s).join("/");
+  /** mezi dvěma po sobě jdoucími zastávkami je hranice pásma, když nemají žádné pásmo společné */
+  function zoneBoundary(a, b) {
+    const za = zonesOf(a), zb = zonesOf(b);
+    if (!za.length || !zb.length) return null;
+    return za.some((z) => zb.includes(z)) ? null : [za.join("/"), zb.join("/")];
+  }
+  function zoneChip(s) {
+    const z = zoneLabel(s);
+    return z ? h("span", { class: "zone", title: `Tarifní pásmo ${z}` }, z) : null;
+  }
+  /** pásma, kterými spoj ještě pojede (od příští zastávky do konečné), v pořadí */
+  function upcomingZones(feats, idx) {
+    const out = [];
+    for (const s of feats.slice(Math.max(0, idx))) {
+      const zs = zonesOf(s);
+      const last = out[out.length - 1];
+      if (!zs.length || zs.includes(last)) continue; // hraniční zastávka (např. "2,3") pásmo nemění
+      out.push(zs[0]);
+    }
+    return out;
+  }
+
   function renderStops(info, stopTimes, state) {
     const { feats, idx } = stopContext(info, stopTimes);
     if (!feats.length) return null;
@@ -496,6 +521,7 @@
       const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        zoneChip(s),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
@@ -505,7 +531,11 @@
     });
     const all = h("button", { class: "vc-more", type: "button" }, `Celý jízdní řád spoje (${feats.length} zastávek)`);
     all.addEventListener("click", () => { showAllStops = true; refreshCard(openId); });
-    return h("div", null, h("ol", { class: "vc-stops" }, rows), all);
+    const zones = upcomingZones(feats, atStop ? idx : idx + 1);
+    const zoneSum = zones.length > 1
+      ? h("div", { class: "zone-sum" }, "Pásma do konečné: ", zones.map((z, i) => [i ? " → " : null, h("b", null, z)]).flat())
+      : null;
+    return h("div", null, h("ol", { class: "vc-stops" }, rows), zoneSum, all);
   }
 
   function renderAllStops(feats, idx, atStop) {
@@ -520,10 +550,13 @@
       const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        zoneChip(s),
         h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
       li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
-      return li;
-    });
+      // hranice pásma před touto zastávkou
+      const zb = i > 0 ? zoneBoundary(feats[i - 1], s) : null;
+      return zb ? [h("li", { class: "zone-sep" }, h("span", null, `pásmo ${zb[0]} → ${zb[1]}`)), li] : li;
+    }).flat();
     const less = h("button", { class: "vc-more", type: "button" }, "Zobrazit méně");
     less.addEventListener("click", () => { showAllStops = false; refreshCard(openId); });
     return h("div", null, h("ol", { class: "vc-stops all" }, rows), less);
@@ -676,6 +709,19 @@
         nextStopMarker = m;
       }
     }
+    // hranice tarifních pásem na trase: štítek "1 | B" mezi zastávkami, kde se pásmo mění
+    const sf = stopFeatures(id);
+    for (let i = 1; i < sf.length; i++) {
+      const zb = zoneBoundary(sf[i - 1].properties, sf[i].properties);
+      if (!zb) continue;
+      const [aLng, aLat] = sf[i - 1].geometry.coordinates, [bLng, bLat] = sf[i].geometry.coordinates;
+      let at = L.latLng((aLat + bLat) / 2, (aLng + bLng) / 2);
+      if (sh && typeof sh === "object") at = snapToShape(trip, at);
+      L.marker(at, {
+        pane: "tripStops", interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="zone-flag"><span>${zb[0]}</span><span>${zb[1]}</span></div>` }),
+      }).addTo(tripLayer);
+    }
   }
 
   let nextStopMarker = null;
@@ -740,6 +786,7 @@
     return h("div", { class: "stop-tip" },
       status || kind ? h("div", { class: "st" }, status, status && kind ? " " : null, kindChip(kind, true)) : null,
       h("div", { class: "nm" }, s.stop_name),
+      zoneLabel(s) ? h("div", { class: "zn" }, `tarifní pásmo ${zoneLabel(s)}`) : null,
       h("div", { class: "big" }, passed ? `odjel ${when}` : here ? `odjíždí ${when}` : `přijede ${when}`),
       h("div", { class: "sm" },
         `${useDep ? "odjezd" : "příjezd"} ${hhmm(rt)}`,

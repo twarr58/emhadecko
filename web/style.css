@@ -147,7 +147,6 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-stops li.stop { cursor: pointer; border-radius: 6px; }
 .vc-stops li.stop:hover .name { text-decoration: underline; text-underline-offset: 2px; }
 .vc-stops.all { max-height: none; }
-.vc-stops .zone { margin-left: 6px; font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .vc-more {
   display: block; width: calc(100% - 28px); margin: 0 14px 6px; padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--soft); color: var(--fg); font: 600 12px system-ui, sans-serif; cursor: pointer;
@@ -319,3 +318,21 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-mostly { margin: 10px 14px 0; font-size: 11px; color: var(--muted); display: flex; align-items: baseline; gap: 2px; }
 .vc-mostly .kind { margin: 0 4px 0 0; }
 .vc-rq-hint.small { padding: 4px 10px; font-size: 11px; }
+
+/* tarifní pásma (#16) */
+.vc-stops .zone {
+  flex: none; min-width: 18px; margin: 0 2px 0 4px; padding: 0 4px; box-sizing: border-box; border-radius: 4px;
+  border: 1px solid var(--border); font-size: 10px; font-weight: 700; text-align: center; color: var(--muted);
+}
+.vc-stops li.zone-sep { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 22px; color: #1d4ed8; font-size: 11px; font-weight: 600; cursor: default; }
+.vc-stops li.zone-sep::before, .vc-stops li.zone-sep::after { content: ""; flex: 1; border-top: 1px dashed #93c5fd; }
+@media (prefers-color-scheme: dark) { .vc-stops li.zone-sep { color: #93c5fd; } }
+.zone-sum { margin: 0 14px 8px; font-size: 12px; color: var(--muted); }
+.zone-sum b { color: var(--fg); }
+.zone-flag {
+  display: inline-flex; transform: translate(-50%, -50%); height: 18px; border-radius: 9px; overflow: hidden;
+  border: 1px solid #93c5fd; background: #fff; font: 700 10px/18px system-ui, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.2); white-space: nowrap;
+}
+.zone-flag span { padding: 0 6px; color: #4b5563; }
+.zone-flag span + span { background: #dbeafe; color: #1d4ed8; }
+.stop-tip .zn { font-size: 11px; color: var(--muted); }
