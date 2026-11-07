@@ -26,7 +26,23 @@ html, body { margin: 0; height: 100%; font: 14px/1.4 system-ui, sans-serif; back
 #types { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
 #types label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 #types .sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-#lines { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+/* hledání linek: aditivní chipy + pole */
+#line-search {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+}
+#line-search:focus-within { border-color: var(--fg); }
+#chips { display: contents; list-style: none; margin: 0; padding: 0; }
+.chip {
+  display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; height: 26px; border-radius: 13px;
+  background: var(--c, #6b7280); color: #fff; font: 700 12px system-ui, sans-serif;
+}
+.chip button {
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: rgba(255,255,255,.22);
+  color: #fff; font-size: 14px; line-height: 22px; cursor: pointer;
+}
+.chip button:hover { background: rgba(255,255,255,.4); }
+#lines { flex: 1; min-width: 90px; box-sizing: border-box; padding: 4px; border: 0; outline: none; background: transparent; color: var(--fg); font: inherit; }
 #status { color: var(--muted); font-size: 12px; margin-top: 6px; }
 #status.err { color: #d6001c; }
 #status.warn { color: #b45309; }
@@ -370,3 +386,15 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .fare-sub, .fare-who { font-size: 12px; color: var(--muted); }
 .fare-note { font-size: 10px; color: var(--muted); }
 .fare-note a { color: inherit; }
+
+/* panel zastávky: odjezdy / příjezdy (#25) */
+.sp-ic { font-size: 22px; }
+.sp-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px 4px; }
+.sp-tabs { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--soft); }
+.sp-tabs button {
+  min-height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  font: 600 13px system-ui, sans-serif; cursor: pointer;
+}
+.sp-tabs button.on { background: var(--bg); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+.sp-all { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.sp-lines { padding: 2px 14px 0; font-size: 11px; color: var(--muted); }

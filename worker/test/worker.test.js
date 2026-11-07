@@ -148,8 +148,9 @@ test("trasa spoje: podle trip_id, jen scopes=shapes, dlouhá cache", async () =>
   assert.equal(new URL(calls[0].url).pathname, "/v2/public/gtfs/trips/331_926_260627");
   r = await req("/v2/public/gtfs/trips/331_926_260627?scopes=shapes");
   assert.equal(calls.length, 1, "druhý dotaz jde z cache");
-  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627?scopes=stop_times")).status, 400);
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627?scopes=vehicle_descriptor")).status, 400);
   assert.equal((await req("/v2/public/gtfs/trips/331_926_260627")).status, 400);
+  assert.equal((await req("/v2/public/gtfs/trips/331_926_260627?scopes=stop_times&scopes=shapes&scopes=info")).status, 200);
 });
 
 test("detail vozidla se necachuje dlouho ani pro samotnou trasu (vozidlo mění spoje)", async () => {
@@ -184,4 +185,23 @@ test("rate limit Workeru je označený jako zdroj worker", async () => {
   const r = await worker.fetch(new Request("https://w.example/v2/public/vehiclepositions", { headers: { Origin: ORIGIN } }), limited);
   assert.equal(r.status, 429);
   assert.equal(r.headers.get("X-Limit-Source"), "worker");
+});
+
+test("odjezdy a příjezdy uzlu: povolené parametry projdou, ostatní 400, Worker doplní časové pásmo", async () => {
+  const r = await req("/v2/pid/departureboards?aswIds[]=458_101&aswIds[]=458&mode=arrivals&limit=20&minutesAfter=90");
+  assert.equal(r.status, 200);
+  const u = new URL(calls[0].url);
+  assert.equal(u.pathname, "/v2/pid/departureboards");
+  assert.deepEqual(u.searchParams.getAll("aswIds[]"), ["458", "458_101"]);
+  assert.equal(u.searchParams.get("mode"), "arrivals");
+  assert.equal(u.searchParams.get("preferredTimezone"), "Europe_Prague");
+  for (const q of [
+    "/v2/pid/departureboards",
+    "/v2/pid/departureboards?aswIds[]=abc",
+    "/v2/pid/departureboards?aswIds[]=1&aswIds[]=2&aswIds[]=3&aswIds[]=4&aswIds[]=5",
+    "/v2/pid/departureboards?aswIds[]=458&mode=mixed",
+    "/v2/pid/departureboards?aswIds[]=458&limit=500",
+    "/v2/pid/departureboards?ids[]=U458Z101P",
+  ]) assert.equal((await req(q)).status, 400, q);
+  assert.equal(calls.length, 1);
 });
