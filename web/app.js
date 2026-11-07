@@ -289,7 +289,7 @@
     const v = vehicles.get(id);
     if (!v) return;
     if (openId !== id) {
-      showAllStops = false; stopView = null; transferSeq = null; clearTrip();
+      showAllStops = false; stopView = null; transferSeq = null; fareFrom = null; fareTo = null; clearTrip();
       const prev = vehicles.get(openId);
       openId = id;
       setXferTrips([]);
@@ -338,10 +338,13 @@
 
   function refreshCard(id) {
     if (openId !== id) return;
+    // rozbalený výběr (Odkud/Kam) by překreslení zavřelo – počkáme na další obnovu
+    if (document.activeElement?.tagName === "SELECT" && $card.contains(document.activeElement)) return;
     const v = vehicles.get(id);
     if (v) selRing.setStyle({ color: colorFor(v.props) });
     $card.replaceChildren(renderCard(id));
     drawTrip(id);
+    drawXferRoutes();
   }
 
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) closeCard(); });
@@ -465,6 +468,104 @@
     return null;
   }
 
+  // ---------- tarifní pásma (#16): zone_id "P", "0", "B", "1"… nebo víc na hranici ("2,3") ----------
+  const zonesOf = (s) => String(s?.zone_id ?? "").split(",").map((z) => z.trim()).filter(Boolean);
+  const zoneLabel = (s) => zonesOf(s).join("/");
+  /** mezi dvěma po sobě jdoucími zastávkami je hranice pásma, když nemají žádné pásmo společné */
+  function zoneBoundary(a, b) {
+    const za = zonesOf(a), zb = zonesOf(b);
+    if (!za.length || !zb.length) return null;
+    return za.some((z) => zb.includes(z)) ? null : [za.join("/"), zb.join("/")];
+  }
+  function zoneChip(s) {
+    const z = zoneLabel(s);
+    return z ? h("span", { class: "zone", title: `Tarifní pásmo ${z}` }, z) : null;
+  }
+  /** pásma, kterými spoj ještě pojede (od příští zastávky do konečné), v pořadí */
+  function upcomingZones(feats, idx) {
+    const out = [];
+    for (const s of feats.slice(Math.max(0, idx))) {
+      const zs = zonesOf(s);
+      const last = out[out.length - 1];
+      if (!zs.length || zs.includes(last)) continue; // hraniční zastávka (např. "2,3") pásmo nemění
+      out.push(zs[0]);
+    }
+    return out;
+  }
+
+  // ---------- orientační cena jízdenky (#19): logika ve fare.js, ceník v tariff.json ----------
+  let tariff = null;
+  let tariffLoading = false;
+  let fareFrom = null; // stop_sequence nástupu (null = příští zastávka)
+  let fareTo = null; // stop_sequence výstupu (null = konečná)
+
+  function loadTariff() {
+    if (tariff || tariffLoading) return;
+    tariffLoading = true;
+    fetch("tariff.json").then((r) => (r.ok ? r.json() : null))
+      .then((t) => { tariff = t; if (t && openId) refreshCard(openId); })
+      .catch(() => {})
+      .finally(() => { tariffLoading = false; });
+  }
+
+  const kc = (n) => `${n} Kč`;
+
+  function renderFare(id, info, stopTimes, state) {
+    if (!window.PidFare) return null;
+    loadTariff();
+    if (!tariff) return null;
+    const { feats, idx } = stopContext(info, stopTimes);
+    const options = feats.slice(Math.max(0, state === "at_stop" ? idx : idx + 1));
+    if (options.length < 2) return null;
+    const from = options.slice(0, -1).find((s) => s.stop_sequence === fareFrom) || options[0];
+    const toOptions = options.filter((s) => s.stop_sequence > from.stop_sequence);
+    const to = toOptions.find((s) => s.stop_sequence === fareTo) || toOptions[toOptions.length - 1];
+    const segment = feats.filter((s) => s.stop_sequence >= from.stop_sequence && s.stop_sequence <= to.stop_sequence);
+
+    const dep = gtfsTime(from.realtime_departure_time || from.departure_time);
+    let arr = gtfsTime(to.realtime_arrival_time || to.arrival_time);
+    if (dep != null && arr != null && arr < dep) arr += 86400e3;
+    const minutes = dep != null && arr != null ? Math.max(1, Math.round((arr - dep) / 60000)) : null;
+    const r = minutes == null ? { error: "Chybí časy jízdního řádu." }
+      : window.PidFare.computeFare(segment.map((s) => ({ zones: zonesOf(s) })), minutes, tariff);
+
+    const select = (label, list, current, onPick) => {
+      const sel = h("select", { "aria-label": label }, list.map((s) =>
+        h("option", { value: String(s.stop_sequence), selected: s === current ? "selected" : null }, s.stop_name)));
+      sel.addEventListener("change", () => { onPick(Number(sel.value)); refreshCard(id); });
+      return h("label", { class: "fare-pick" }, h("span", null, label), sel);
+    };
+
+    let result;
+    if (r.error) {
+      result = h("div", { class: "vc-msg" }, r.error);
+    } else {
+      const t = r.ticket;
+      const isPrague = r.kind === "prague";
+      const name = isPrague ? t.name : `${t.zones} pásma, ${t.minutes} min`.replace(/^(\d+) pásma/, (m, n) => `${n} ${Number(n) >= 5 ? "pásem" : "pásma"}`);
+      const who = isPrague ? tariff.prague : tariff.region;
+      result = h("div", { class: "fare-res" },
+        h("div", { class: "fare-main" }, h("span", null, name), h("b", null, kc(t.full.app))),
+        h("div", { class: "fare-sub" },
+          `papírová ${kc(t.full.paper)}`,
+          t.reduced ? ` · zvýhodněná ${kc(t.reduced.app)} / ${kc(t.reduced.paper)}` : ""),
+        h("div", { class: "fare-who" }, `Zdarma: ${who.free_for}.`));
+    }
+
+    return h("section", { class: "vc-fare" },
+      h("h3", null, "Jízdenka na tuto cestu"),
+      h("div", { class: "fare-picks" },
+        select("Odkud", options.slice(0, -1), from, (q) => { fareFrom = q; if (fareTo != null && fareTo <= q) fareTo = null; }),
+        select("Kam", toOptions, to, (q) => { fareTo = q; })),
+      r.zones ? h("div", { class: "fare-zones" },
+        "Pásma ", r.zones.map((z, i) => [i ? " · " : null, h("b", null, z)]).flat(),
+        ` (${r.zones.length})`, minutes != null ? ` · jízda ${minutes} min` : "") : null,
+      result,
+      h("div", { class: "fare-note" }, "Orientačně podle ceníku PID platného od ",
+        new Date(tariff.valid_from).toLocaleDateString("cs-CZ"), " (cena v aplikaci PID Lítačka). ",
+        h("a", { href: tariff.source, target: "_blank", rel: "noopener" }, "Oficiální ceník ↗")));
+  }
+
   function renderStops(info, stopTimes, state) {
     const { feats, idx } = stopContext(info, stopTimes);
     if (!feats.length) return null;
@@ -495,6 +596,7 @@
       const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        zoneChip(s),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
@@ -504,7 +606,11 @@
     });
     const all = h("button", { class: "vc-more", type: "button" }, `Celý jízdní řád spoje (${feats.length} zastávek)`);
     all.addEventListener("click", () => { showAllStops = true; refreshCard(openId); });
-    return h("div", null, h("ol", { class: "vc-stops" }, rows), all);
+    const zones = upcomingZones(feats, atStop ? idx : idx + 1);
+    const zoneSum = zones.length > 1
+      ? h("div", { class: "zone-sum" }, "Pásma do konečné: ", zones.map((z, i) => [i ? " → " : null, h("b", null, z)]).flat())
+      : null;
+    return h("div", null, h("ol", { class: "vc-stops" }, rows), zoneSum, all);
   }
 
   function renderAllStops(feats, idx, atStop) {
@@ -519,10 +625,13 @@
       const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
         h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        zoneChip(s),
         h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
       li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
-      return li;
-    });
+      // hranice pásma před touto zastávkou
+      const zb = i > 0 ? zoneBoundary(feats[i - 1], s) : null;
+      return zb ? [h("li", { class: "zone-sep" }, h("span", null, `pásmo ${zb[0]} → ${zb[1]}`)), li] : li;
+    }).flat();
     const less = h("button", { class: "vc-more", type: "button" }, "Zobrazit méně");
     less.addEventListener("click", () => { showAllStops = false; refreshCard(openId); });
     return h("div", null, h("ol", { class: "vc-stops all" }, rows), less);
@@ -542,20 +651,51 @@
   const tripStopsData = new Map();
 
   /** typ zastávky podle GTFS pickup_type/drop_off_type: 3 = na znamení, 1 = nelze nastoupit/vystoupit */
-  function stopKind(id, seq) {
+  const isReq = (st) => st.pickup === 3 || st.dropoff === 3;
+
+  /** skutečný typ zastávky z dat (výchozí a konečnou za "na znamení" nepovažujeme – tam vystupují/nastupují všichni) */
+  function rawStopKind(id, seq) {
     const trip = vehicles.get(id)?.props.gtfs_trip_id;
-    const st = tripStopsData.get(trip)?.get(Number(seq));
+    const m = tripStopsData.get(trip);
+    const st = m?.get(Number(seq));
     if (!st) return null;
-    if (st.pickup === 3 || st.dropoff === 3) return "request";
+    const seqs = [...m.keys()];
+    const terminal = Number(seq) === Math.min(...seqs) || Number(seq) === Math.max(...seqs);
+    if (isReq(st) && !terminal) return "request";
     if (st.pickup === 1 && st.dropoff !== 1) return "exit";
     if (st.dropoff === 1 && st.pickup !== 1) return "board";
     return null;
+  }
+
+  /**
+   * Většina zastávek spoje na znamení? (pražské autobusy: prakticky všechny)
+   * Pak se × u každé zastávky nevyplatí – zvýrazníme naopak zastávky, kde vozidlo staví vždy (#15).
+   */
+  function mostlyRequest(id) {
+    const trip = vehicles.get(id)?.props.gtfs_trip_id;
+    const m = tripStopsData.get(trip);
+    if (!m || m.size < 3) return false;
+    const seqs = [...m.keys()].sort((a, b) => a - b).slice(1, -1); // bez výchozí a konečné
+    return seqs.filter((q) => isReq(m.get(q))).length > seqs.length / 2;
+  }
+
+  /** typ zastávky k zobrazení: v režimu "většina na znamení" se ukazují výjimky ("staví vždy") */
+  function stopKind(id, seq) {
+    const kind = rawStopKind(id, seq);
+    if (!mostlyRequest(id)) return kind;
+    if (kind === "request") return null;
+    if (kind) return kind; // jen výstup / jen nástup
+    const m = tripStopsData.get(vehicles.get(id)?.props.gtfs_trip_id);
+    const seqs = [...m.keys()];
+    const terminal = Number(seq) === Math.min(...seqs) || Number(seq) === Math.max(...seqs);
+    return terminal ? null : "always";
   }
 
   function kindChip(kind, long = false) {
     if (kind === "request") return h("span", { class: "kind rq", title: "Zastávka na znamení" }, long ? "× na znamení" : "×");
     if (kind === "exit") return h("span", { class: "kind ex", title: "Jen pro výstup" }, "↓ jen výstup");
     if (kind === "board") return h("span", { class: "kind bd", title: "Jen pro nástup" }, "↑ jen nástup");
+    if (kind === "always") return h("span", { class: "kind al", title: "Vozidlo tu staví vždy, i bez znamení" }, "staví vždy");
     return null;
   }
 
@@ -644,6 +784,19 @@
         nextStopMarker = m;
       }
     }
+    // hranice tarifních pásem na trase: štítek "1 | B" mezi zastávkami, kde se pásmo mění
+    const sf = stopFeatures(id);
+    for (let i = 1; i < sf.length; i++) {
+      const zb = zoneBoundary(sf[i - 1].properties, sf[i].properties);
+      if (!zb) continue;
+      const [aLng, aLat] = sf[i - 1].geometry.coordinates, [bLng, bLat] = sf[i].geometry.coordinates;
+      let at = L.latLng((aLat + bLat) / 2, (aLng + bLng) / 2);
+      if (sh && typeof sh === "object") at = snapToShape(trip, at);
+      L.marker(at, {
+        pane: "tripStops", interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="zone-flag"><span>${zb[0]}</span><span>${zb[1]}</span></div>` }),
+      }).addTo(tripLayer);
+    }
   }
 
   let nextStopMarker = null;
@@ -698,7 +851,7 @@
     // budoucí zastávka s časem v minulosti = predikce ještě nedohnala zpoždění
     const when = rtMs == null ? "" : !passed && rtMs < Date.now() ? "každou chvíli" : relTime(rtMs);
 
-    const kind = stopKind(id, seq);
+    const kind = rawStopKind(id, seq);
     if (compact) {
       return h("div", { class: "stop-tip compact" },
         h("b", null, s.stop_name), " · ", h("span", { class: "eta" }, here ? `odjíždí ${when}` : when),
@@ -708,6 +861,7 @@
     return h("div", { class: "stop-tip" },
       status || kind ? h("div", { class: "st" }, status, status && kind ? " " : null, kindChip(kind, true)) : null,
       h("div", { class: "nm" }, s.stop_name),
+      zoneLabel(s) ? h("div", { class: "zn" }, `tarifní pásmo ${zoneLabel(s)}`) : null,
       h("div", { class: "big" }, passed ? `odjel ${when}` : here ? `odjíždí ${when}` : `přijede ${when}`),
       h("div", { class: "sm" },
         `${useDep ? "odjezd" : "příjezd"} ${hhmm(rt)}`,
@@ -716,7 +870,7 @@
       h("div", { class: "hint" }, "Klikni pro odjezdy ze zastávky"));
   }
 
-  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; nextStopMarker = null; }
+  function clearTrip() { tripLayer.clearLayers(); tripKey = ""; nextStopMarker = null; clearXferRoutes(); }
 
   function openStop(seq, name) {
     stopView = { seq, name, data: null, error: null, loading: false };
@@ -859,13 +1013,90 @@
     return { txt: `${m} min`, cls: n <= 1 ? "tight" : "" };
   }
 
+  // ---------- trasy přestupních spojů (#23): stahují se jen na vyžádání ----------
+  const xferRouteLayer = L.layerGroup().addTo(map);
+  const XFER_PIN_ALL = 5; // "Ukázat trasy přestupů" připne prvních N
+  let xferPinned = new Set(); // trip_id připnutých tras
+  let xferHover = null; // trip_id trasy pod myší
+  let xferHoverTimer = null;
+  /** trip_id → {color, headsign, label} pro vykreslení */
+  const xferInfo = new Map();
+  let xferRouteKey = "";
+
+  /** trasa spoje na vyžádání (sdílí cache a časový rozpočet s ostatními trasami) */
+  function requestTripShape(trip) {
+    if (!trip || shapes.has(trip)) return;
+    shapes.set(trip, "pending");
+    shapeQueue.unshift({ trip, vehicleId: null, force: true });
+    pumpShapes();
+  }
+
+  /** souřadnice trasy od bodu (projekce na trasu) do konce */
+  function shapeFrom(sh, latlng) {
+    const pr = project(sh, latlng);
+    if (pr.off > 400) return sh.coords.map(([lng, lat]) => [lat, lng]); // zastávka mimo trasu (jiný uzel): celá trasa
+    const start = pointAt(sh, pr.d);
+    const out = [[start.lat, start.lng]];
+    for (let i = 0; i < sh.coords.length; i++) if (sh.cum[i] > pr.d) out.push([sh.coords[i][1], sh.coords[i][0]]);
+    return out;
+  }
+
+  function clearXferRoutes() {
+    xferPinned = new Set();
+    xferHover = null;
+    clearTimeout(xferHoverTimer);
+    xferRouteLayer.clearLayers();
+    xferRouteKey = "";
+  }
+
+  function setXferHover(trip) {
+    clearTimeout(xferHoverTimer);
+    if (!trip) { xferHover = null; drawXferRoutes(); return; }
+    // krátká prodleva: projetí myší přes seznam nespustí stahování všech tras
+    xferHoverTimer = setTimeout(() => { xferHover = trip; requestTripShape(trip); drawXferRoutes(); }, 250);
+  }
+
+  function toggleXferPin(trip) {
+    const next = new Set(xferPinned);
+    if (next.has(trip)) next.delete(trip); else { next.add(trip); requestTripShape(trip); }
+    xferPinned = next;
+    drawXferRoutes();
+    if (openId) refreshCard(openId);
+  }
+
+  function drawXferRoutes() {
+    const id = openId;
+    const ctx = id && !stopView ? transferContext(id) : null;
+    const trips = ctx ? [...new Set([...xferPinned, ...(xferHover ? [xferHover] : [])])] : [];
+    const stopF = ctx ? stopFeatures(id).find((f) => f.properties.stop_sequence === ctx.stop.stop_sequence) : null;
+    const key = trips.map((t) => `${t}:${typeof shapes.get(t) === "object"}:${t === xferHover}`).join("|") + `|${ctx?.stop.stop_sequence}`;
+    if (key === xferRouteKey) return;
+    xferRouteKey = key;
+    xferRouteLayer.clearLayers();
+    if (!stopF) return;
+    const from = L.latLng(stopF.geometry.coordinates[1], stopF.geometry.coordinates[0]);
+    for (const trip of trips) {
+      const sh = shapes.get(trip);
+      const info = xferInfo.get(trip);
+      if (!sh || typeof sh !== "object" || !info) continue;
+      const pts = shapeFrom(sh, from);
+      if (pts.length < 2) continue;
+      const hot = trip === xferHover;
+      L.polyline(pts, { pane: "trip", color: "#fff", weight: hot ? 9 : 7, opacity: 0.9, interactive: false }).addTo(xferRouteLayer);
+      L.polyline(pts, { pane: "trip", color: info.color, weight: hot ? 5 : 4, opacity: 0.95, dashArray: "8 6", interactive: false }).addTo(xferRouteLayer);
+      L.marker(pts[pts.length - 1], { pane: "tripStops", interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0] }) })
+        .bindTooltip(`${info.label} → ${info.headsign}`, { permanent: true, direction: "right", offset: [6, 0], className: "xfer-end" })
+        .addTo(xferRouteLayer);
+    }
+  }
+
   function renderTransfers(id) {
     const ctx = transferContext(id);
     if (!ctx) return null;
     const t = transfers.get(transferKeyFor.get(id)) || null;
     const chips = h("div", { class: "tr-stops" }, ctx.stops.slice(0, 10).map((s) => {
       const b = h("button", { type: "button", class: s === ctx.stop ? "on" : null }, s.stop_name);
-      b.addEventListener("click", () => { transferSeq = s.stop_sequence; refreshCard(id); loadTransfers(id); });
+      b.addEventListener("click", () => { transferSeq = s.stop_sequence; clearXferRoutes(); refreshCard(id); loadTransfers(id); });
       return b;
     }));
     const when = !ctx.arr ? "" : ctx.arr < Date.now() ? "každou chvíli" : relTime(ctx.arr);
@@ -887,6 +1118,13 @@
         const [m1, m2] = dep.departure_timestamp?.minutes || [];
         const a = minutesLabel(m1), b = m2 != null ? minutesLabel(m2) : null;
         const veh = [...vehicles.values()].find((x) => x.props.gtfs_trip_id === dep.trip?.id);
+        const trip = dep.trip?.id;
+        if (trip) xferInfo.set(trip, { color: c, headsign: dep.trip?.headsign || "", label: dep.route?.short_name || "" });
+        const pinned = trip && xferPinned.has(trip);
+        const pin = trip ? h("button", { type: "button", class: `tr-pin${pinned ? " on" : ""}`, "aria-pressed": pinned ? "true" : "false",
+          "aria-label": pinned ? `Skrýt trasu linky ${dep.route?.short_name}` : `Ukázat trasu linky ${dep.route?.short_name}`,
+          title: pinned ? "Skrýt trasu" : "Ukázat trasu na mapě" }, "⤳") : null;
+        pin?.addEventListener("click", (ev) => { ev.stopPropagation(); toggleXferPin(trip); });
         const li = h("li", { class: veh ? "has-veh" : null, title: veh ? "Ukázat vozidlo" : null },
           h("span", { class: "dl", style: `background:${c}` }, dep.route?.short_name),
           h("span", { class: "dh" },
@@ -898,7 +1136,12 @@
             dep.substitution_text?.cs ? h("small", { class: "sub" }, dep.substitution_text.cs) : null),
           h("span", { class: "dt" },
             h("b", { class: a.cls || null }, a.txt),
-            b ? h("small", null, `pak ${b.txt}`) : null));
+            b ? h("small", null, `pak ${b.txt}`) : null),
+          pin);
+        if (trip) {
+          li.addEventListener("mouseenter", () => setXferHover(trip));
+          li.addEventListener("mouseleave", () => setXferHover(null));
+        }
         if (veh) {
           li.addEventListener("click", () => openCard(veh.id));
           // najetí na řádek zvýrazní vozidlo na mapě
@@ -912,7 +1155,20 @@
     const xfers = (data?.departures || []).filter((dep) => dep.trip?.id)
       .map((dep) => [dep.trip.id, minutesLabel((dep.departure_timestamp?.minutes || [])[0]).txt]);
     queueMicrotask(() => { if (openId === id && !stopView) setXferTrips(xfers); });
-    return h("section", { class: "vc-tr" }, head, chips, ...notes, list);
+    const firstTrips = (data?.departures || []).map((dep) => dep.trip?.id).filter(Boolean).slice(0, XFER_PIN_ALL);
+    let allBtn = null;
+    if (firstTrips.length) {
+      const allOn = firstTrips.every((t) => xferPinned.has(t));
+      allBtn = h("button", { type: "button", class: "vc-more tr-all" }, allOn ? "Skrýt trasy přestupů" : `Ukázat trasy přestupů na mapě (${firstTrips.length})`);
+      allBtn.addEventListener("click", () => {
+        xferPinned = allOn ? new Set() : new Set([...xferPinned, ...firstTrips]);
+        if (!allOn) firstTrips.forEach(requestTripShape);
+        drawXferRoutes();
+        refreshCard(id);
+      });
+    }
+    queueMicrotask(drawXferRoutes);
+    return h("section", { class: "vc-tr" }, head, chips, ...notes, list, allBtn);
   }
 
   function renderCard(id) {
@@ -951,15 +1207,18 @@
     );
     const where = data ? whereText(state, info, data.stop_times) : null;
     if (where) {
-      const kind = stopKind(id, where[2]);
+      const kind = rawStopKind(id, where[2]);
       status.append(h("div", { class: `vc-where ${state === "at_stop" ? "at" : ""}` },
         h("span", { class: "pin" }),
         where[0] ? h("span", { class: "lbl" }, where[0]) : null,
         h("b", { title: where[1] }, where[1]),
         kind ? h("span", { class: "push" }, kindChip(kind, true)) : null));
       if (kind === "request" && where[0] === "Příští zastávka") {
-        status.append(h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
-          "Chceš-li vystoupit, zmáčkni tlačítko. Na zastávce dej řidiči znamení rukou."));
+        // u spojů, kde je na znamení skoro všechno, stačí krátká nápověda místo velkého boxu
+        status.append(mostlyRequest(id)
+          ? h("div", { class: "vc-rq-hint small" }, "Chceš-li vystoupit, zmáčkni tlačítko.")
+          : h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
+            "Chceš-li vystoupit, zmáčkni tlačítko. Na zastávce dej řidiči znamení rukou."));
       }
     }
 
@@ -970,6 +1229,13 @@
     if (d?.error && !data) body = h("div", { class: "vc-msg" }, d.limited ? "Detail spoje se načte za chvíli – PID API je teď přetížené." : "Detail spoje se nepodařilo načíst.");
     else if (!data) body = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
     else body = renderStops(info, data.stop_times, state) || h("div", { class: "vc-msg" }, "Jízdní řád spoje není k dispozici.");
+    if (data && mostlyRequest(id) && !showAllStops) {
+      body = h("div", null, h("div", { class: "vc-mostly" }, h("span", { class: "kind rq" }, "×"),
+        " Téměř všechny zastávky jsou na znamení. Označené jsou ty, kde vozidlo staví vždy."), body);
+    } else if (data && mostlyRequest(id)) {
+      body = h("div", null, h("div", { class: "vc-mostly" }, h("span", { class: "kind rq" }, "×"),
+        " Téměř všechny zastávky jsou na znamení."), body);
+    }
 
     const feats = [];
     if (desc?.is_wheelchair_accessible) feats.push(h("span", { class: "feat", title: "Bezbariérové vozidlo" }, "♿ bezbariérové"));
@@ -986,7 +1252,8 @@
     );
 
     const tr = data ? renderTransfers(id) : null;
-    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, tr, veh,
+    const fare = data ? renderFare(id, info, data.stop_times, state) : null;
+    return h("div", { class: "vc", style: `--c:${color}` }, head, status, body, fare, tr, veh,
       h("footer", { class: "vc-foot" }, `spoj ${p.gtfs_trip_id || "?"}`));
   }
 
@@ -1094,7 +1361,7 @@
       shapeInflight++;
       // trasa podle spoje (ne podle vozidla: to během dne přejíždí mezi spoji)
       apiFetch(`/v2/public/gtfs/trips/${encodeURIComponent(trip)}`, [["scopes", "shapes"]])
-        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); })
+        .then((data) => { shapes.set(trip, buildShape(data?.shapes?.features) || "none"); onShapeLoaded(trip); if (openId) refreshCard(openId); drawXferRoutes(); })
         .catch((e) => {
           if (e.status === 429) {
             shapes.delete(trip); // zkusíme později
@@ -1204,6 +1471,63 @@
     for (const v of vehicles.values()) if (v.mode) shown++;
     setStatus(`${shown} / ${vehicles.size} vozidel${extra}${pollNote()}`);
   }
+
+  // ---------- vrstva tarifních pásem (#18): oficiální polygony IPR Praha, zjednodušené v scripts/fetch_zones.py ----------
+  const ZONES_STORAGE = "emhadecko.layer.zones";
+  const $layerZones = document.getElementById("layer-zones");
+  const $zonesLegend = document.getElementById("zones-legend");
+  map.createPane("zones").style.zIndex = 250; // nad dlaždicemi, pod trasami a vozidly
+  map.getPane("zones").style.pointerEvents = "none"; // nebere kliky vozidlům ani zastávkám
+  let zonesLayer = null;
+  let zonesAttribution = "";
+
+  async function buildZonesLayer() {
+    const res = await fetch("zones.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    zonesAttribution = data.attribution || "";
+    const group = L.layerGroup();
+    data.features.forEach((f, i) => {
+      const prague = f.properties.prague;
+      L.geoJSON(f, {
+        pane: "zones", interactive: false,
+        style: {
+          color: prague ? "#1d4ed8" : "#475569", weight: prague ? 2 : 1.2, opacity: 0.7, dashArray: prague ? null : "5 5",
+          fillColor: prague ? "#2563eb" : i % 2 ? "#0891b2" : "#7c3aed", fillOpacity: prague ? 0.1 : 0.06,
+        },
+      }).addTo(group);
+      const [lng, lat] = f.properties.label;
+      L.marker([lat, lng], {
+        pane: "zones", interactive: false, keyboard: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="zone-label${prague ? " p" : ""}">${prague ? "P · 0 · B" : `pásmo ${f.properties.zone}`}</div>` }),
+      }).addTo(group);
+    });
+    return group;
+  }
+
+  async function setZonesLayer(on) {
+    store.set(ZONES_STORAGE, on ? "1" : "0");
+    $layerZones.checked = on;
+    if (!on) {
+      zonesLayer?.remove();
+      if (zonesAttribution) map.attributionControl.removeAttribution(zonesAttribution);
+      $zonesLegend.hidden = true;
+      return;
+    }
+    try {
+      zonesLayer ??= await buildZonesLayer();
+      if (!$layerZones.checked) return; // mezitím vypnuto
+      zonesLayer.addTo(map);
+      if (zonesAttribution) map.attributionControl.addAttribution(zonesAttribution);
+      $zonesLegend.hidden = false;
+    } catch (e) {
+      console.error(e);
+      $layerZones.checked = false;
+      setStatus("Vrstvu tarifních pásem se nepodařilo načíst.", false, true);
+    }
+  }
+  $layerZones.addEventListener("change", () => setZonesLayer($layerZones.checked));
+  if (store.get(ZONES_STORAGE) === "1") setZonesLayer(true);
 
   // ---------- výluky a mimořádnosti (RSS pid.cz → alerts.json, generuje workflow) ----------
   const $alerts = document.getElementById("alerts");

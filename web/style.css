@@ -147,7 +147,6 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .vc-stops li.stop { cursor: pointer; border-radius: 6px; }
 .vc-stops li.stop:hover .name { text-decoration: underline; text-underline-offset: 2px; }
 .vc-stops.all { max-height: none; }
-.vc-stops .zone { margin-left: 6px; font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .vc-more {
   display: block; width: calc(100% - 28px); margin: 0 14px 6px; padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--soft); color: var(--fg); font: 600 12px system-ui, sans-serif; cursor: pointer;
@@ -298,3 +297,76 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
 }
 .vc-stops .name .tag, .vc-stops .name .kind { flex: none; }
+
+/* trasy přestupních spojů (#23) */
+.tr-list li { grid-template-columns: auto 1fr auto auto; }
+.tr-pin {
+  width: 32px; height: 32px; padding: 0; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.tr-pin:hover { color: var(--fg); border-color: var(--fg); }
+.tr-pin.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tr-all { margin-top: 2px; }
+.leaflet-tooltip.xfer-end {
+  padding: 2px 7px; border: 0; border-radius: 6px; background: var(--bg); color: var(--fg);
+  font: 700 11px system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+.leaflet-tooltip.xfer-end::before { display: none; }
+
+/* #15: spoje, kde je na znamení skoro všechno */
+.kind.al { background: var(--ok-bg); color: var(--ok); }
+.vc-mostly { margin: 10px 14px 0; font-size: 11px; color: var(--muted); display: flex; align-items: baseline; gap: 2px; }
+.vc-mostly .kind { margin: 0 4px 0 0; }
+.vc-rq-hint.small { padding: 4px 10px; font-size: 11px; }
+
+/* tarifní pásma (#16) */
+.vc-stops .zone {
+  flex: none; min-width: 18px; margin: 0 2px 0 4px; padding: 0 4px; box-sizing: border-box; border-radius: 4px;
+  border: 1px solid var(--border); font-size: 10px; font-weight: 700; text-align: center; color: var(--muted);
+}
+.vc-stops li.zone-sep { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 22px; color: #1d4ed8; font-size: 11px; font-weight: 600; cursor: default; }
+.vc-stops li.zone-sep::before, .vc-stops li.zone-sep::after { content: ""; flex: 1; border-top: 1px dashed #93c5fd; }
+@media (prefers-color-scheme: dark) { .vc-stops li.zone-sep { color: #93c5fd; } }
+.zone-sum { margin: 0 14px 8px; font-size: 12px; color: var(--muted); }
+.zone-sum b { color: var(--fg); }
+.zone-flag {
+  display: inline-flex; transform: translate(-50%, -50%); height: 18px; border-radius: 9px; overflow: hidden;
+  border: 1px solid #93c5fd; background: #fff; font: 700 10px/18px system-ui, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.2); white-space: nowrap;
+}
+.zone-flag span { padding: 0 6px; color: #4b5563; }
+.zone-flag span + span { background: #dbeafe; color: #1d4ed8; }
+.stop-tip .zn { font-size: 11px; color: var(--muted); }
+
+/* vrstvy a tarifní pásma (#18) */
+#layers { margin: 8px 0 0; padding: 6px 0 0; border: 0; border-top: 1px solid var(--border); }
+#layers legend { padding: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+#layers label { display: flex; align-items: center; gap: 6px; margin-top: 4px; cursor: pointer; }
+.zone-label {
+  transform: translate(-50%, -50%); white-space: nowrap; font: 800 13px system-ui, sans-serif; color: #334155;
+  text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 6px #fff; letter-spacing: .02em;
+}
+.zone-label.p { color: #1d4ed8; font-size: 15px; }
+#zones-legend {
+  position: absolute; z-index: 1000; right: 12px; bottom: 28px; display: flex; flex-direction: column; gap: 3px;
+  max-width: 260px; padding: 8px 10px; border-radius: 8px; background: var(--bg); color: var(--fg);
+  box-shadow: 0 2px 10px rgba(0,0,0,.2); font-size: 11px;
+}
+#zones-legend small { color: var(--muted); }
+#zones-legend .sw { display: inline-block; width: 10px; height: 10px; margin-right: 3px; border-radius: 2px; vertical-align: -1px; }
+#zones-legend .sw.p { background: rgba(37,99,235,.35); border: 1px solid #1d4ed8; }
+#zones-legend .sw.a { background: rgba(124,58,237,.25); border: 1px dashed #475569; }
+#zones-legend .sw.b { background: rgba(8,145,178,.25); border: 1px dashed #475569; }
+
+/* orientační cena jízdenky (#19) */
+.vc-fare { margin: 6px 14px 0; padding: 10px 12px; border-radius: 10px; background: var(--soft); display: flex; flex-direction: column; gap: 6px; }
+.vc-fare h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.fare-picks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.fare-pick { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11px; color: var(--muted); }
+.fare-pick select { min-width: 0; min-height: 32px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font: 12px system-ui, sans-serif; }
+.fare-zones { font-size: 12px; color: var(--muted); }
+.fare-zones b { color: var(--fg); }
+.fare-main { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }
+.fare-main b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.fare-sub, .fare-who { font-size: 12px; color: var(--muted); }
+.fare-note { font-size: 10px; color: var(--muted); }
+.fare-note a { color: inherit; }

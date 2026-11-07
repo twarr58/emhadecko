@@ -1,0 +1,267 @@
+{
+  "name": "Tarif PID – jednotlivé jízdné",
+  "valid_from": "2026-01-01",
+  "checked": "2026-11-07",
+  "source": "https://pid.cz/jizdne-a-tarif/",
+  "notes": [
+    "Ceny převzaté z ceníku na pid.cz (PID Lítačka / papírová jízdenka), ne z právního textu Tarifu PID.",
+    "Praha se pro cesty z/do vnějších pásem počítá jako 3 pásma (P, 0, B) – https://pid.cz/en/new-pid-tariff-from-1-january-2026-dont-pay-more-than-you-have-to/",
+    "Pásma na sebe musí navazovat (P, 0, B, 1, 2, …); hraniční zastávka patří do pásma výhodnějšího pro cestujícího.",
+    "Jízdenka pro 2 pásma neplatí v pásmech P, 0, B."
+  ],
+  "zone_order": [
+    "P",
+    "0",
+    "B",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13"
+  ],
+  "prague": {
+    "zones": [
+      "P",
+      "0",
+      "B"
+    ],
+    "tickets": [
+      {
+        "name": "Praha 30 min",
+        "minutes": 30,
+        "full": {
+          "app": 36,
+          "paper": 39
+        },
+        "reduced": {
+          "app": 18,
+          "paper": 19
+        }
+      },
+      {
+        "name": "Praha 90 min",
+        "minutes": 90,
+        "full": {
+          "app": 46,
+          "paper": 50
+        },
+        "reduced": {
+          "app": 23,
+          "paper": 25
+        }
+      },
+      {
+        "name": "Praha 24 hod.",
+        "minutes": 1440,
+        "full": {
+          "app": 140,
+          "paper": 150
+        },
+        "reduced": {
+          "app": 70,
+          "paper": 75
+        }
+      }
+    ],
+    "full_for": "Od 15 do 60 let",
+    "reduced_for": "Senioři od 60 do 65 let (s prokázáním nároku)",
+    "free_for": "Děti do 15 let (od 6 let s prokázáním nároku), senioři od 65 let s prokázáním nároku, osoby ZTP"
+  },
+  "region": {
+    "tickets": [
+      {
+        "zones": 2,
+        "minutes": 15,
+        "full": {
+          "app": 24,
+          "paper": 26
+        },
+        "reduced": {
+          "app": 12,
+          "paper": 13
+        },
+        "not_in": [
+          "P",
+          "0",
+          "B"
+        ]
+      },
+      {
+        "zones": 3,
+        "minutes": 30,
+        "full": {
+          "app": 36,
+          "paper": 39
+        },
+        "reduced": {
+          "app": 18,
+          "paper": 19
+        }
+      },
+      {
+        "zones": 4,
+        "minutes": 60,
+        "full": {
+          "app": 48,
+          "paper": 52
+        },
+        "reduced": {
+          "app": 24,
+          "paper": 26
+        }
+      },
+      {
+        "zones": 5,
+        "minutes": 90,
+        "full": {
+          "app": 60,
+          "paper": 65
+        },
+        "reduced": {
+          "app": 30,
+          "paper": 32
+        }
+      },
+      {
+        "zones": 6,
+        "minutes": 120,
+        "full": {
+          "app": 72,
+          "paper": 78
+        },
+        "reduced": {
+          "app": 36,
+          "paper": 39
+        }
+      },
+      {
+        "zones": 7,
+        "minutes": 150,
+        "full": {
+          "app": 84,
+          "paper": 91
+        },
+        "reduced": {
+          "app": 42,
+          "paper": 45
+        }
+      },
+      {
+        "zones": 8,
+        "minutes": 180,
+        "full": {
+          "app": 96,
+          "paper": 104
+        },
+        "reduced": {
+          "app": 48,
+          "paper": 52
+        }
+      },
+      {
+        "zones": 9,
+        "minutes": 180,
+        "full": {
+          "app": 108,
+          "paper": 117
+        },
+        "reduced": {
+          "app": 54,
+          "paper": 58
+        }
+      },
+      {
+        "zones": 10,
+        "minutes": 180,
+        "full": {
+          "app": 120,
+          "paper": 130
+        },
+        "reduced": {
+          "app": 60,
+          "paper": 65
+        }
+      },
+      {
+        "zones": 11,
+        "minutes": 180,
+        "full": {
+          "app": 132,
+          "paper": 143
+        },
+        "reduced": {
+          "app": 66,
+          "paper": 71
+        }
+      },
+      {
+        "zones": 12,
+        "minutes": 180,
+        "full": {
+          "app": 144,
+          "paper": 156
+        },
+        "reduced": {
+          "app": 72,
+          "paper": 78
+        }
+      },
+      {
+        "zones": 13,
+        "minutes": 180,
+        "full": {
+          "app": 156,
+          "paper": 169
+        },
+        "reduced": {
+          "app": 78,
+          "paper": 84
+        }
+      },
+      {
+        "zones": 14,
+        "minutes": 180,
+        "full": {
+          "app": 168,
+          "paper": 182
+        },
+        "reduced": {
+          "app": 84,
+          "paper": 91
+        }
+      },
+      {
+        "zones": 15,
+        "minutes": 180,
+        "full": {
+          "app": 180,
+          "paper": 195
+        },
+        "reduced": {
+          "app": 90,
+          "paper": 97
+        }
+      },
+      {
+        "zones": 16,
+        "minutes": 180,
+        "full": {
+          "app": 192,
+          "paper": 208
+        },
+        "reduced": null
+      }
+    ],
+    "full_for": "Od 18 do 65 let",
+    "reduced_for": "Děti 6–15, junioři 15–18, studenti 18–26 a senioři od 65 let (s prokázáním nároku)",
+    "free_for": "Děti do 6 let v doprovodu osoby starší 10 let"
+  }
+}
