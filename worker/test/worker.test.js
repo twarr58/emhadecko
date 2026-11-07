@@ -24,7 +24,7 @@ beforeEach(() => {
     if (upstreamStatus !== 200) return new Response(`{"error":"nope","key":"${KEY}"}`, { status: upstreamStatus });
     const u = new URL(url);
     if (u.pathname === "/v2/public/vehiclepositions") return Response.json(feed);
-    if (u.pathname.startsWith("/v2/gtfs/trips/")) return Response.json({ trip_id: "x", stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", trip_id: "x", pickup_type: "0" }] });
+    if (u.pathname.startsWith("/v2/gtfs/trips/")) return Response.json({ trip_id: "x", stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", trip_id: "x", pickup_type: "0", drop_off_type: "3" }] });
     return Response.json({ ok: true, path: u.pathname, search: u.search });
   };
 });
@@ -103,7 +103,7 @@ test("detail vozidla, zastávky spoje a odjezdy projdou s povolenými parametry"
   let r = await req("/v2/public/vehiclepositions/service-0-9273?scopes=info&scopes=stop_times&scopes=vehicle_descriptor");
   assert.equal(r.status, 200);
   r = await req("/v2/gtfs/trips/22_1_261106?includeStopTimes=true");
-  assert.deepEqual(await r.json(), { stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P" }] });
+  assert.deepEqual(await r.json(), { stop_times: [{ stop_sequence: 1, stop_id: "U1Z1P", pickup_type: "0", drop_off_type: "3" }] });
   r = await req(`/v2/public/departureboards?stopIds[]=${encodeURIComponent('{"0":["U1Z1P"]}')}&limit=12&minutesAfter=90`);
   assert.equal(r.status, 200);
   assert.equal(calls.length, 3);

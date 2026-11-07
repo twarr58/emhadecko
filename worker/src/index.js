@@ -117,8 +117,12 @@ async function tripStops(env, q, tripId) {
   if (q.get("includeStopTimes") !== "true") throw new HttpError(400, "only includeStopTimes=true is supported");
   const body = await cached(`trip:${tripId}`, 6 * 3_600_000, async () => {
     const d = await upstream(env, `/v2/gtfs/trips/${encodeURIComponent(tripId)}`, [["includeStopTimes", "true"]]);
-    // stránka potřebuje jen pořadí a ID zastávek
-    return { stop_times: (d?.stop_times || []).map((st) => ({ stop_sequence: st.stop_sequence, stop_id: st.stop_id })) };
+    // stránka potřebuje pořadí, ID zastávky a typ nástupu/výstupu (3 = na znamení)
+    return {
+      stop_times: (d?.stop_times || []).map((st) => ({
+        stop_sequence: st.stop_sequence, stop_id: st.stop_id, pickup_type: st.pickup_type, drop_off_type: st.drop_off_type,
+      })),
+    };
   });
   return { body, maxAge: 3600 };
 }
