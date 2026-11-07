@@ -25,37 +25,69 @@ const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 // Ukládáme promise, takže souběžné požadavky na stejná data sdílí jeden dotaz na Golemio.
 const cache = new Map();
 
-function cached(key, ttl, load) {
+// staleMs: když Golemio selže (typicky 429), vrátíme poslední platná data, pokud nejsou starší než staleMs
+function cached(key, ttl, load, staleMs = 0) {
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && hit.exp > now) return hit.value;
-  const value = load().catch((e) => { cache.delete(key); throw e; });
-  cache.set(key, { exp: now + ttl, value });
+  const entry = { exp: now + ttl, good: hit?.good, goodAt: hit?.goodAt };
+  entry.value = load()
+    .then((v) => { entry.good = v; entry.goodAt = Date.now(); return v; })
+    .catch((e) => {
+      if (entry.good !== undefined && Date.now() - entry.goodAt < staleMs) {
+        entry.exp = Date.now() + 3_000; // zkusit znovu za chvíli
+        return entry.good;
+      }
+      cache.delete(key);
+      throw e;
+    });
+  cache.set(key, entry);
   if (cache.size > CACHE_MAX_ENTRIES) {
     for (const [k, v] of cache) if (v.exp <= now) cache.delete(k);
     // pořád moc? smaž nejstarší (Map drží pořadí vložení)
     for (const k of cache.keys()) { if (cache.size <= CACHE_MAX_ENTRIES) break; cache.delete(k); }
   }
-  return value;
+  return entry.value;
 }
 
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, source = "worker") { super(message); this.status = status; this.source = source; }
+}
+
+// ---------- šetrnost ke Golemiu ----------
+// max. UPSTREAM_CONCURRENCY souběžných dotazů na isolate; po 429 krátká pauza, kdy na Golemio nevoláme
+const UPSTREAM_CONCURRENCY = 4;
+let upstreamActive = 0;
+const upstreamWaiters = [];
+let upstreamCooldownUntil = 0;
+
+async function withUpstreamSlot(fn) {
+  if (upstreamActive >= UPSTREAM_CONCURRENCY) await new Promise((r) => upstreamWaiters.push(r));
+  upstreamActive++;
+  try { return await fn(); } finally { upstreamActive--; upstreamWaiters.shift()?.(); }
 }
 
 async function upstream(env, path, params = []) {
   if (!env.GOLEMIO_API_KEY) throw new HttpError(500, "worker is not configured");
+  if (Date.now() < upstreamCooldownUntil) throw new HttpError(429, "upstream rate limited", "upstream");
   const url = new URL(path, UPSTREAM);
   for (const [k, v] of params) url.searchParams.append(k, v);
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", "X-Access-Token": env.GOLEMIO_API_KEY },
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
+  return withUpstreamSlot(async () => {
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", "X-Access-Token": env.GOLEMIO_API_KEY },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
+    });
+    if (res.status === 429) {
+      const ra = Number(res.headers.get("Retry-After"));
+      upstreamCooldownUntil = Date.now() + (Number.isFinite(ra) && ra > 0 ? Math.min(ra, 60) : 10) * 1000;
+      throw new HttpError(429, "upstream rate limited", "upstream");
+    }
+    if (!res.ok) {
+      // chyby z Golemia nepřeposíláme doslova (nic citlivého v nich nemá být, ale jistota je jistota)
+      throw new HttpError(res.status === 404 ? 404 : 502, `upstream ${res.status}`, "upstream");
+    }
+    return res.json();
   });
-  if (!res.ok) {
-    // chyby z Golemia nepřeposíláme doslova (nic citlivého v nich nemá být, ale jistota je jistota)
-    throw new HttpError(res.status === 429 ? 429 : res.status === 404 ? 404 : 502, `upstream ${res.status}`);
-  }
-  return res.json();
 }
 
 // ---------- validace ----------
@@ -81,7 +113,7 @@ async function vehiclePositions(env, q) {
   const bbox = parseBBox(q.get("boundingBox"));
   const types = q.getAll("routeType");
   if (types.some((t) => !ROUTE_TYPES.has(t))) throw new HttpError(400, "invalid routeType");
-  const all = await cached("positions", POSITIONS_TTL, () => upstream(env, "/v2/public/vehiclepositions"));
+  const all = await cached("positions", POSITIONS_TTL, () => upstream(env, "/v2/public/vehiclepositions"), 120_000);
   const features = (all.features || []).filter((f) => {
     const c = f?.geometry?.type === "Point" ? f.geometry.coordinates : null;
     if (bbox && (!c || c[1] > bbox.north || c[1] < bbox.south || c[0] < bbox.west || c[0] > bbox.east)) return false;
@@ -98,7 +130,7 @@ async function vehicleDetail(env, q, vehicleId) {
   // vše vázané na vozidlo je realtime: vozidlo během dne přejíždí mezi spoji,
   // takže ani trasu nejde cachovat déle (trasu spoje stránka bere z tripShape)
   const body = await cached(`veh:${vehicleId}:${scopes}`, 5_000,
-    () => upstream(env, `/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, scopes.map((s) => ["scopes", s])));
+    () => upstream(env, `/v2/public/vehiclepositions/${encodeURIComponent(vehicleId)}`, scopes.map((s) => ["scopes", s])), 120_000);
   return { body, maxAge: 5 };
 }
 
@@ -137,7 +169,7 @@ async function departures(env, q) {
   const minutesAfter = intParam(q, "minutesAfter", 60, 1, 120);
   const group = JSON.stringify({ 0: ids });
   const body = await cached(`dep:${group}:${limit}:${minutesAfter}`, 10_000, () =>
-    upstream(env, "/v2/public/departureboards", [["stopIds[]", group], ["limit", String(limit)], ["minutesAfter", String(minutesAfter)]]));
+    upstream(env, "/v2/public/departureboards", [["stopIds[]", group], ["limit", String(limit)], ["minutesAfter", String(minutesAfter)]]), 120_000);
   return { body, maxAge: 10 };
 }
 
@@ -159,7 +191,7 @@ async function transferBoards(env, q) {
   const params = [["aswId", aswId], reg ? ["vehicleRegistrationNumber", reg] : ["tripNumber", tripNumber], ["routeType", routeType], ["limit", String(limit)]];
   if (timeFrom) params.push(["timeFrom", timeFrom]);
   const key = `tb:${params.map((p) => p.join("=")).join("&")}`;
-  const body = await cached(key, 15_000, () => upstream(env, "/v4/pid/transferboards", params));
+  const body = await cached(key, 15_000, () => upstream(env, "/v4/pid/transferboards", params), 120_000);
   return { body, maxAge: 15 };
 }
 
@@ -188,6 +220,7 @@ function json(status, body, origin, extra = {}) {
   };
   if (origin) {
     headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Expose-Headers"] = "X-Limit-Source, Retry-After";
   }
   return new Response(JSON.stringify(body), { status, headers });
 }
@@ -225,7 +258,7 @@ export default {
     if (env.LIMITER) {
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
       const { success } = await env.LIMITER.limit({ key: ip });
-      if (!success) return json(429, { error: "too many requests" }, allowed, { "Retry-After": "60" });
+      if (!success) return json(429, { error: "too many requests" }, allowed, { "Retry-After": "60", "X-Limit-Source": "worker" });
     }
 
     try {
@@ -233,10 +266,13 @@ export default {
       return json(200, body, allowed, { "Cache-Control": `public, max-age=${maxAge}` });
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 502;
-      return json(status, { error: e instanceof HttpError ? e.message : "upstream unavailable" }, allowed);
+      const extra = status === 429
+        ? { "X-Limit-Source": e.source || "worker", "Retry-After": String(Math.max(1, Math.ceil((upstreamCooldownUntil - Date.now()) / 1000)) || 10) }
+        : {};
+      return json(status, { error: e instanceof HttpError ? e.message : "upstream unavailable" }, allowed, extra);
     }
   },
 };
 
 // jen pro testy
-export const _internal = { cache, parseBBox };
+export const _internal = { cache, parseBBox, resetCooldown: () => { upstreamCooldownUntil = 0; } };
