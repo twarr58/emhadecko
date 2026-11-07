@@ -96,6 +96,7 @@
     $lines.value = "";
     store.set(CHIPS_STORAGE, JSON.stringify(chips));
     renderChips();
+    syncLineStops();
     return added;
   }
 
@@ -103,6 +104,7 @@
     chips = chips.filter((x) => x !== line);
     store.set(CHIPS_STORAGE, JSON.stringify(chips));
     renderChips();
+    drawLineStops();
     onLineFilter(true, false);
   }
 
@@ -116,7 +118,7 @@
     else if (e.key === "Escape" && ($lines.value || chips.length)) {
       e.stopPropagation(); // neuzavírat kartu
       if ($lines.value) $lines.value = "";
-      else { chips = []; store.set(CHIPS_STORAGE, "[]"); renderChips(); }
+      else { chips = []; store.set(CHIPS_STORAGE, "[]"); renderChips(); drawLineStops(); }
       onLineFilter(true, false);
     }
   });
@@ -334,6 +336,7 @@
   function openCard(id) {
     const v = vehicles.get(id);
     if (!v) return;
+    stopPanel = null;
     if (openId !== id) {
       showAllStops = false; stopView = null; transferSeq = null; fareFrom = null; fareTo = null; clearTrip();
       const prev = vehicles.get(openId);
@@ -1425,6 +1428,7 @@
     const id = p.vehicle_id || p.gtfs_trip_id;
     if (!id) return null;
     const latlng = L.latLng(g.coordinates[1], g.coordinates[0]);
+    noteLineTrip(p);
 
     let v = vehicles.get(id);
     if (!v) {
@@ -1681,6 +1685,241 @@
       h("ul", { class: "al-list" }, list.map((a) => alertItem(a, true))));
   }
 
+  // ---------- zastávky hledaných linek + panel zastávky s odjezdy/příjezdy (#25) ----------
+  const LINE_STOPS_STORAGE = "emhadecko.layer.linestops";
+  const $layerLineStops = document.getElementById("layer-linestops");
+  map.createPane("lines").style.zIndex = 380; // trasy hledaných linek: pod trasou otevřeného spoje
+  map.createPane("lineStops").style.zIndex = 420; // zastávky: nad tečkami vozidel, ať jdou rozkliknout
+  const lineStopsLayer = L.layerGroup().addTo(map);
+  let lineStopsOn = store.get(LINE_STOPS_STORAGE) !== "0";
+  $layerLineStops.checked = lineStopsOn;
+  const MAX_TRIPS_PER_LINE = 4; // kolik spojů nejvýš zkusíme, než najdeme oba směry
+
+  /** linka → spoje, které jsme viděli v polohách (z nich bereme jízdní řád) */
+  const lineTrips = new Map();
+  /** linka → {state, loading, trips: [{shape, stops}], sigs, tried, color} */
+  const lineData = new Map();
+
+  const routeKey = (p) => String(p.gtfs_route_short_name).toUpperCase();
+  function noteLineTrip(p) {
+    if (!p?.gtfs_trip_id) return;
+    const l = routeKey(p);
+    if (!lineTrips.has(l)) lineTrips.set(l, new Set());
+    lineTrips.get(l).add(p.gtfs_trip_id);
+  }
+
+  /** počká na token ze společného rozpočtu (stejný jako pro trasy), ať nevznikají nárazy */
+  async function waitToken() {
+    for (;;) {
+      const w = shapeToken();
+      if (!w) return;
+      await new Promise((r) => setTimeout(r, w));
+    }
+  }
+
+  async function ensureLine(line) {
+    let d = lineData.get(line);
+    if (d && (d.loading || d.state === "ready")) return;
+    d = d || { state: "loading", loading: false, trips: [], sigs: new Set(), tried: new Set(), color: null };
+    lineData.set(line, d);
+    const candidates = [...(lineTrips.get(line) || [])].filter((t) => !d.tried.has(t));
+    if (!candidates.length) { d.state = d.trips.length ? "ready" : "notrips"; drawLineStops(); return; }
+    d.loading = true;
+    for (const trip of candidates) {
+      if (d.trips.length >= 2 || d.tried.size >= MAX_TRIPS_PER_LINE || !chips.includes(line)) break;
+      d.tried.add(trip);
+      await waitToken();
+      try {
+        const [st, ids] = await Promise.all([
+          // trasu už můžeme mít z vozidla na mapě – pak ji znovu nestahovat
+          apiFetch(`/v2/public/gtfs/trips/${encodeURIComponent(trip)}`,
+            [["scopes", "info"], ["scopes", "stop_times"], ...(typeof shapes.get(trip) === "object" ? [] : [["scopes", "shapes"]])]),
+          loadTripStops(trip),
+        ]);
+        const stops = (st?.stop_times?.features || [])
+          .filter((f) => f.geometry?.coordinates && f.properties)
+          .sort((a, b) => a.properties.stop_sequence - b.properties.stop_sequence)
+          .map((f) => {
+            const sid = ids?.get(Number(f.properties.stop_sequence))?.stop_id;
+            const node = /^U(\d+)Z/.exec(sid || "")?.[1] || null;
+            return { name: f.properties.stop_name, node, zone: f.properties.zone_id, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] };
+          });
+        if (stops.length < 2) continue;
+        const info = st.info || st;
+        d.color = d.color || colorFor({ route_type: info.route_type, gtfs_route_short_name: line });
+        const sig = `${stops[0].name}→${stops[stops.length - 1].name}`;
+        const rev = `${stops[stops.length - 1].name}→${stops[0].name}`;
+        if (d.sigs.has(sig)) continue; // stejný směr už máme
+        const known = shapes.get(trip);
+        const sh = typeof known === "object" ? known : buildShape(st.shapes?.features);
+        if (sh) shapes.set(trip, sh);
+        d.sigs.add(sig);
+        d.trips.push({ trip, shape: sh, stops, reverseOf: d.sigs.has(rev) });
+        drawLineStops();
+      } catch (e) {
+        if (e.status === 429) break; // přetížení: zkusíme při další obnově
+      }
+    }
+    d.loading = false;
+    d.state = d.trips.length ? "ready" : "none";
+    drawLineStops();
+  }
+
+  function drawLineStops() {
+    lineStopsLayer.clearLayers();
+    if (!lineStopsOn) return;
+    /** uzel zastávky → sloučená značka (oba směry, víc linek) */
+    const nodes = new Map();
+    for (const line of chips) {
+      const d = lineData.get(line);
+      if (!d) continue;
+      for (const t of d.trips) {
+        if (t.shape) {
+          L.polyline(t.shape.coords.map(([lng, lat]) => [lat, lng]), { pane: "lines", color: d.color, weight: 4, opacity: 0.45, interactive: false })
+            .addTo(lineStopsLayer);
+        }
+        for (const s of t.stops) {
+          const key = s.node || s.name;
+          const n = nodes.get(key) || { name: s.name, node: s.node, zone: s.zone, lat: 0, lng: 0, count: 0, lines: new Map() };
+          n.lat += s.lat; n.lng += s.lng; n.count++;
+          n.lines.set(line, d.color);
+          nodes.set(key, n);
+        }
+      }
+    }
+    for (const n of nodes.values()) {
+      const lines = [...n.lines.keys()];
+      const color = lines.length === 1 ? n.lines.get(lines[0]) : "#334155";
+      L.circleMarker([n.lat / n.count, n.lng / n.count], {
+        pane: "lineStops", radius: 5, weight: 2.5, color, fillColor: "#fff", fillOpacity: 1,
+      })
+        .bindTooltip(`${n.name} · ${lines.join(", ")}`, { direction: "top", offset: [0, -6] })
+        .on("click", () => openStopPanel({ name: n.name, node: n.node, zone: n.zone, lines }))
+        .addTo(lineStopsLayer);
+    }
+  }
+
+  function syncLineStops() {
+    for (const line of chips) {
+      const d = lineData.get(line);
+      if (!d || ((d.state === "notrips" || d.state === "none") && [...(lineTrips.get(line) || [])].some((t) => !d.tried.has(t)))) {
+        if (d) d.state = "loading";
+        ensureLine(line);
+      }
+    }
+    drawLineStops();
+  }
+
+  $layerLineStops.addEventListener("change", () => {
+    lineStopsOn = $layerLineStops.checked;
+    store.set(LINE_STOPS_STORAGE, lineStopsOn ? "1" : "0");
+    if (lineStopsOn) syncLineStops(); else drawLineStops();
+  });
+
+  // ---------- panel zastávky ----------
+  /** @type {null | {name, node, zone, lines: string[], mode: "departures"|"arrivals", all: boolean, data, error, loading, at}} */
+  let stopPanel = null;
+
+  function openStopPanel(stop) {
+    if (openId) closeCard();
+    if (!$alerts.hidden) closeAlerts();
+    stopPanel = { ...stop, mode: "departures", all: !stop.lines?.length, data: null, error: null, loading: false, at: 0 };
+    $card.hidden = false;
+    $card.scrollTop = 0;
+    renderStopPanel();
+    loadStopBoard(true);
+  }
+
+  function closeStopPanel() {
+    stopPanel = null;
+    if (!openId) { $card.hidden = true; $card.replaceChildren(); }
+  }
+
+  async function loadStopBoard(force = false) {
+    const sp = stopPanel;
+    if (!sp || !sp.node || sp.loading) return;
+    if (!force && Date.now() - sp.at < 15_000) return;
+    sp.loading = true;
+    const mode = sp.mode;
+    try {
+      const data = await apiFetch("/v2/pid/departureboards", [["aswIds[]", sp.node], ["mode", mode], ["limit", "40"], ["minutesAfter", "90"]]);
+      if (stopPanel !== sp || sp.mode !== mode) return;
+      sp.data = data;
+      sp.error = null;
+    } catch (e) {
+      if (stopPanel === sp) sp.error = friendlyError(e);
+    } finally {
+      sp.loading = false;
+      sp.at = Date.now();
+      if (stopPanel === sp) renderStopPanel();
+    }
+  }
+
+  function boardRow(dep, mode) {
+    const route = dep.route || {}, trip = dep.trip || {};
+    const ts = (mode === "arrivals" ? dep.arrival_timestamp : dep.departure_timestamp) || dep.departure_timestamp || dep.arrival_timestamp || {};
+    const c = colorFor({ route_type: NUM_RT[route.type] || "bus", gtfs_route_short_name: route.short_name });
+    const sched = ts.scheduled ? new Date(ts.scheduled).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }) : "";
+    const m = ts.minutes;
+    const when = m == null ? "" : m === "<1" || m === "0" ? "teď" : `${m} min`;
+    const delayMin = dep.delay?.is_available ? dep.delay.minutes : null;
+    const veh = [...vehicles.values()].find((x) => x.props.gtfs_trip_id === trip.id);
+    const li = h("li", { class: `${trip.is_canceled ? "canceled" : ""} ${veh ? "has-veh" : ""}`, title: veh ? "Ukázat vozidlo" : null },
+      h("span", { class: "dl", style: `background:${c}` }, route.short_name),
+      h("span", { class: "dh" }, trip.headsign,
+        trip.is_wheelchair_accessible ? h("span", { class: "acc", title: "bezbariérové" }, " ♿") : null,
+        trip.is_canceled ? h("span", { class: "tag" }, "odřeknuto") : null,
+        dep.stop?.platform_code ? h("small", { class: "pl" }, ` · nást. ${dep.stop.platform_code}`) : null),
+      h("span", { class: "dt" },
+        h("b", null, when),
+        h("small", { class: delayMin >= 1 ? "late" : null }, delayMin >= 1 ? `${sched} +${delayMin}` : sched)));
+    if (veh) li.addEventListener("click", () => openCard(veh.id));
+    return li;
+  }
+
+  function renderStopPanel() {
+    const sp = stopPanel;
+    if (!sp) return;
+    if (document.activeElement?.tagName === "SELECT" && $card.contains(document.activeElement)) return;
+    const close = closeButton();
+    close.addEventListener("click", closeStopPanel);
+    const tab = (mode, label) => {
+      const b = h("button", { type: "button", role: "tab", "aria-selected": sp.mode === mode ? "true" : "false", class: sp.mode === mode ? "on" : null }, label);
+      b.addEventListener("click", () => { if (sp.mode === mode) return; sp.mode = mode; sp.data = null; renderStopPanel(); loadStopBoard(true); });
+      return b;
+    };
+    let toggle = null;
+    if (sp.lines?.length) {
+      toggle = h("label", { class: "sp-all" }, h("input", { type: "checkbox", checked: sp.all ? "checked" : null }), " všechny linky");
+      toggle.querySelector("input").addEventListener("change", (e) => { sp.all = e.target.checked; renderStopPanel(); });
+    }
+
+    let list;
+    const deps = (sp.data?.departures || []).filter((dep) => sp.all || !sp.lines?.length || sp.lines.includes(String(dep.route?.short_name).toUpperCase()));
+    if (!sp.node) list = h("div", { class: "vc-msg" }, "U této zastávky chybí identifikátor, odjezdy nelze načíst.");
+    else if (sp.error && !sp.data) list = h("div", { class: "vc-msg" }, `Nepodařilo se načíst. ${sp.error}`);
+    else if (!sp.data) list = h("div", { class: "vc-stops-sk" }, h("span", { class: "sk" }), h("span", { class: "sk" }), h("span", { class: "sk sk-w60" }));
+    else if (!deps.length) list = h("div", { class: "vc-msg" }, sp.mode === "arrivals" ? "V příštích 90 minutách sem nic nepřijede." : "V příštích 90 minutách odsud nic neodjede.",
+      !sp.all && sp.lines?.length ? " Zkus „všechny linky“." : "");
+    else list = h("ul", { class: "vc-deps" }, deps.slice(0, 25).map((dep) => boardRow(dep, sp.mode)));
+
+    $card.replaceChildren(h("div", { class: "vc", style: "--c:#334155" },
+      h("header", { class: "vc-head" },
+        h("div", { class: "vc-line sp-ic", "aria-hidden": "true" }, "●"),
+        h("div", { class: "vc-title" },
+          h("div", { class: "vc-kind" }, sp.zone ? `Zastávka · pásmo ${String(sp.zone).replace(",", "/")}` : "Zastávka"),
+          h("div", { class: "vc-dest", title: sp.name }, sp.name)),
+        close),
+      h("div", { class: "sp-bar" },
+        h("div", { class: "sp-tabs", role: "tablist", "aria-label": "Odjezdy nebo příjezdy" }, tab("departures", "Odjezdy"), tab("arrivals", "Příjezdy")),
+        toggle),
+      sp.lines?.length && !sp.all ? h("div", { class: "sp-lines" }, "Jen linky: ", sp.lines.join(", ")) : null,
+      list,
+      h("footer", { class: "vc-foot" }, "Všechna nástupiště zastávky · obnova à 15 s")));
+  }
+
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && stopPanel && !openId) closeStopPanel(); });
+
   // ---------- hledání linky ve filtru ----------
   // Filtr je nový záměr: karta jiné linky se zavře (a s ní zvýraznění přestupů). Mapa se během psaní
   // nehýbe; až po dopsání (0,8 s) nebo Enteru najdeme vozidla v celé síti a ukážeme je.
@@ -1731,8 +1970,10 @@
         const data = await res.json();
         pts = (data.features || [])
           .filter((f) => f.geometry?.type === "Point" && matchesFilter(f.properties || {}) && enabledTypes.has(f.properties.route_type))
+          .map((f) => { noteLineTrip(f.properties); return f; })
           .map((f) => L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]));
         located.set(key, pts);
+        if (lineStopsOn) syncLineStops();
         if (located.size > 30) located.delete(located.keys().next().value);
       } catch (e) {
         if (e.name !== "AbortError" && e.status === 429) setStatus("PID API je teď přetížené, linku zkus najít za chvíli.", false, true);
@@ -1817,6 +2058,8 @@
       pumpShapes();
       if (computeFewMode() !== fewMode) syncAll();
       if (chips.length && $chips.querySelector("li:not([style])")) renderChips(); // doplnit barvy linek
+      if (chips.length && lineStopsOn) syncLineStops();
+      if (stopPanel) loadStopBoard();
       backoffMs = 0;
       lastOk = new Date();
       updateCount();
