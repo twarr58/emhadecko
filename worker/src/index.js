@@ -4,7 +4,7 @@
  * Vrstvy ochrany:
  *  1. klíč je jen v secretu GOLEMIO_API_KEY, nikdy se nevrací ani neloguje
  *  2. allowlist: jen GET a jen endpointy, které stránka používá, s validací parametrů
- *     (polohy, detail vozidla, trasa a zastávky spoje, odjezdy, přestupní tablo)
+ *     (polohy, detail vozidla, trasa a zastávky spoje, odjezdy a příjezdy, přestupní tablo)
  *  3. CORS + kontrola Origin: odpovídá jen povoleným originům (ALLOWED_ORIGINS)
  *  4. cache: polohy se z Golemia stahují max. 1× za POSITIONS_TTL pro všechny klienty
  *     a výřez mapy se filtruje tady → zneužití nevyčerpá limit klíče
@@ -135,12 +135,15 @@ async function vehicleDetail(env, q, vehicleId) {
 }
 
 // trasa spoje podle trip_id: statická data jízdního řádu, dají se cachovat dlouho
+const TRIP_STATIC_SCOPES = new Set(["shapes", "stop_times", "info"]);
+
 async function tripShape(env, q, tripId) {
   if (!ID_RE.test(tripId)) throw new HttpError(400, "invalid trip id");
-  const scopes = q.getAll("scopes");
-  if (scopes.length !== 1 || scopes[0] !== "shapes") throw new HttpError(400, "only scopes=shapes is supported");
-  const body = await cached(`tripshape:${tripId}`, 6 * 3_600_000,
-    () => upstream(env, `/v2/public/gtfs/trips/${encodeURIComponent(tripId)}`, [["scopes", "shapes"]]));
+  // statický jízdní řád spoje: trasa, zastávky, základní info – nemění se, cache 6 h
+  const scopes = [...new Set(q.getAll("scopes"))].sort();
+  if (!scopes.length || scopes.some((x) => !TRIP_STATIC_SCOPES.has(x))) throw new HttpError(400, "invalid scopes");
+  const body = await cached(`tripstatic:${tripId}:${scopes}`, 6 * 3_600_000,
+    () => upstream(env, `/v2/public/gtfs/trips/${encodeURIComponent(tripId)}`, scopes.map((x) => ["scopes", x])));
   return { body, maxAge: 3600 };
 }
 
@@ -173,6 +176,22 @@ async function departures(env, q) {
   return { body, maxAge: 10 };
 }
 
+// odjezdy / příjezdy celé zastávky (uzlu) – panel zastávky
+const BOARD_MODES = new Set(["departures", "arrivals"]);
+async function stopBoard(env, q) {
+  const ids = [...new Set(q.getAll("aswIds[]"))];
+  if (!ids.length || ids.length > 4 || ids.some((id) => !/^\d{1,5}(_\d{1,4})?$/.test(id))) throw new HttpError(400, "invalid aswIds[]");
+  const mode = q.get("mode") || "departures";
+  if (!BOARD_MODES.has(mode)) throw new HttpError(400, "invalid mode");
+  const limit = intParam(q, "limit", 20, 1, 40);
+  const minutesAfter = intParam(q, "minutesAfter", 60, 1, 120);
+  const params = [...ids.sort().map((id) => ["aswIds[]", id]), ["mode", mode], ["limit", String(limit)],
+    ["minutesAfter", String(minutesAfter)], ["preferredTimezone", "Europe_Prague"], ["skip[]", "untracked"]];
+  const key = `board:${params.map((x) => x.join("=")).join("&")}`;
+  const body = await cached(key, 15_000, () => upstream(env, "/v2/pid/departureboards", params), 120_000);
+  return { body, maxAge: 15 };
+}
+
 // přestupní tablo PID (stejné jako ve vozidlech): odjezdy z uzlu bez vlastního vozidla
 const TB_ROUTE_TYPES = new Set(["0", "1", "2", "3", "4", "7", "11"]);
 async function transferBoards(env, q) {
@@ -203,6 +222,7 @@ function route(path) {
   if ((m = /^\/v2\/gtfs\/trips\/([^/]+)$/.exec(path))) return (env, q) => tripStops(env, q, decodeURIComponent(m[1]));
   if (path === "/v2/public/departureboards") return (env, q) => departures(env, q);
   if (path === "/v4/pid/transferboards") return (env, q) => transferBoards(env, q);
+  if (path === "/v2/pid/departureboards") return (env, q) => stopBoard(env, q);
   return null;
 }
 
