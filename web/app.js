@@ -356,6 +356,25 @@
     return el;
   }
 
+  /** kulaté zavírací tlačítko s křížkem jako SVG (znak × se v různých fontech nevycentruje) */
+  function closeButton() {
+    const btn = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" });
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", "M3.5 3.5l9 9M12.5 3.5l-9 9");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    svg.append(path);
+    btn.append(svg);
+    return btn;
+  }
+
   function delayInfo(sec) {
     if (sec == null) return { label: "Bez dat", cls: "unknown", hint: "zpoždění neznámé" };
     const m = Math.round(sec / 60);
@@ -456,7 +475,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[p.role];
       const li = h("li", { class: `stop ${p.role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
         h("span", { class: "time" },
           late ? h("s", null, sched) : null,
           h("b", { class: late ? "rt" : null }, rt || sched)),
@@ -480,7 +499,7 @@
       const tag = { here: "zde", next: "příští", final: "konečná" }[role];
       const li = h("li", { class: `stop ${role}`, title: "Odjezdy ze zastávky" },
         h("span", { class: "dot" }),
-        h("span", { class: "name" }, h("span", { class: "nt" }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
+        h("span", { class: "name" }, h("span", { class: "nt", title: s.stop_name }, s.stop_name), tag && h("span", { class: "tag" }, tag), kindChip(stopKind(openId, s.stop_sequence))),
         h("span", { class: "time" }, late ? h("s", null, sched) : null, h("b", { class: late ? "rt" : null }, rt || sched)));
       li.addEventListener("click", () => openStop(s.stop_sequence, s.stop_name));
       return li;
@@ -896,7 +915,7 @@
         h("div", { class: "vc-dest", title: headsign || null }, headsign ? ["→ ", headsign] : (d?.loading || !d ? h("span", { class: "sk sk-w60" }) : `linka ${p.gtfs_route_short_name}`)),
       ),
     );
-    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    const close = closeButton();
     close.addEventListener("click", closeCard);
     head.append(close);
     if (stopView) return h("div", { class: "vc", style: `--c:${color}` }, head, renderDepartures(p));
@@ -916,7 +935,7 @@
       status.append(h("div", { class: `vc-where ${state === "at_stop" ? "at" : ""}` },
         h("span", { class: "pin" }),
         where[0] ? h("span", { class: "lbl" }, where[0]) : null,
-        h("b", null, where[1]),
+        h("b", { title: where[1] }, where[1]),
         kind ? h("span", { class: "push" }, kindChip(kind, true)) : null));
       if (kind === "request" && where[0] === "Příští zastávka") {
         status.append(h("div", { class: "vc-rq-hint" }, h("b", null, "Zastávka na znamení. "),
@@ -1200,7 +1219,7 @@
     const current = shown.filter((a) => a.kind === "vyluka" && isActive(a, now));
     const upcoming = shown.filter((a) => a.from && a.from * 1000 > now).sort((a, b) => a.from - b.from);
 
-    const close = h("button", { class: "vc-close", type: "button", "aria-label": "Zavřít" }, "×");
+    const close = closeButton();
     close.addEventListener("click", closeAlerts);
     const section = (title, items, cls = "") => items.length
       ? [h("h3", { class: `al-h ${cls}` }, `${title} (${items.length})`), h("ul", { class: "al-list" }, items.map((a) => alertItem(a)))]
