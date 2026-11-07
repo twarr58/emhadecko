@@ -27,6 +27,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # zastávky a trasy všech linek z jízdního řádu PID (GTFS, ~48 MB) pro linky, které právě nejedou;
+      # stahuje se jednou denně (cache podle data), při chybě zůstane včerejší verze z cache
+      - id: day
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - id: lines-cache
+        uses: actions/cache@v4
+        with:
+          path: web/lines
+          key: pid-lines-${{ steps.day.outputs.d }}
+          restore-keys: pid-lines-
+      - name: Build PID lines from GTFS
+        if: steps.lines-cache.outputs.cache-hit != 'true'
+        run: python3 scripts/build_lines.py web/lines || echo "::warning::building lines from GTFS failed, keeping the cached version (if any)"
+
       # pid.cz RSS nemá CORS, prohlížeč ho nenačte → převedeme ho na web/alerts.json
       # tarifní pásma (IPR Praha) se mění zřídka: obnovit jen při pushi / ručním spuštění;
       # při chybě zůstane web/zones.json z repa
