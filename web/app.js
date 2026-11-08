@@ -1849,7 +1849,7 @@
   function openStopPanel(stop) {
     if (openId) closeCard();
     if (!$alerts.hidden) closeAlerts();
-    stopPanel = { ...stop, mode: "departures", all: !stop.lines?.length, data: null, error: null, loading: false, at: 0 };
+    stopPanel = { ...stop, mode: "departures", all: !stop.lines?.length, data: null, error: null, request: null, at: 0 };
     $card.hidden = false;
     $card.scrollTop = 0;
     renderStopPanel();
@@ -1863,13 +1863,15 @@
 
   async function loadStopBoard(force = false) {
     const sp = stopPanel;
-    if (!sp || !sp.node || sp.loading) return;
+    if (!sp || !sp.node || (!force && sp.request)) return;
     if (!force && Date.now() - sp.at < 15_000) return;
-    sp.loading = true;
+    const request = {};
+    sp.request = request;
     const mode = sp.mode;
+    const isCurrent = () => stopPanel === sp && sp.request === request;
     try {
       const data = await apiFetch("/v2/pid/departureboards", [["aswIds[]", sp.node], ["mode", mode], ["limit", "40"], ["minutesAfter", "90"]]);
-      if (stopPanel !== sp || sp.mode !== mode) return;
+      if (!isCurrent()) return;
       sp.data = data;
       sp.error = null;
       sp.next = undefined;
@@ -1877,14 +1879,16 @@
       if (mode === "departures" && sp.lines?.length && !(data.departures || []).some(wanted)) {
         // hledaná linka v příštích 90 min neodjíždí → nejbližší spoj v příštích 6 h
         const later = await apiFetch("/v2/pid/departureboards", [["aswIds[]", sp.node], ["mode", "departures"], ["limit", "40"], ["minutesAfter", "360"]]).catch(() => null);
-        if (stopPanel === sp) sp.next = (later?.departures || []).find(wanted) || null;
+        if (isCurrent()) sp.next = (later?.departures || []).find(wanted) || null;
       }
     } catch (e) {
-      if (stopPanel === sp) sp.error = friendlyError(e);
+      if (isCurrent()) sp.error = friendlyError(e);
     } finally {
-      sp.loading = false;
-      sp.at = Date.now();
-      if (stopPanel === sp) renderStopPanel();
+      if (isCurrent()) {
+        sp.request = null;
+        sp.at = Date.now();
+        renderStopPanel();
+      }
     }
   }
 
@@ -1918,7 +1922,7 @@
     close.addEventListener("click", closeStopPanel);
     const tab = (mode, label) => {
       const b = h("button", { type: "button", role: "tab", "aria-selected": sp.mode === mode ? "true" : "false", class: sp.mode === mode ? "on" : null }, label);
-      b.addEventListener("click", () => { if (sp.mode === mode) return; sp.mode = mode; sp.data = null; renderStopPanel(); loadStopBoard(true); });
+      b.addEventListener("click", () => { if (sp.mode === mode) return; sp.mode = mode; sp.data = null; sp.error = null; sp.next = undefined; renderStopPanel(); loadStopBoard(true); });
       return b;
     };
     let toggle = null;
