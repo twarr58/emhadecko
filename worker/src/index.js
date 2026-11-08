@@ -69,10 +69,10 @@ async function withUpstreamSlot(fn) {
 
 async function upstream(env, path, params = []) {
   if (!env.GOLEMIO_API_KEY) throw new HttpError(500, "worker is not configured");
-  if (Date.now() < upstreamCooldownUntil) throw new HttpError(429, "upstream rate limited", "upstream");
   const url = new URL(path, UPSTREAM);
   for (const [k, v] of params) url.searchParams.append(k, v);
   return withUpstreamSlot(async () => {
+    if (Date.now() < upstreamCooldownUntil) throw new HttpError(429, "upstream rate limited", "upstream");
     const res = await fetch(url, {
       headers: { Accept: "application/json", "X-Access-Token": env.GOLEMIO_API_KEY },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
