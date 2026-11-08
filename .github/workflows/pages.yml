@@ -48,8 +48,21 @@ jobs:
         if: github.event_name != 'schedule'
         run: python3 scripts/fetch_zones.py web/zones.json || echo "::warning::tariff zones refresh failed, keeping web/zones.json from the repo"
 
+      - name: Restore PID alerts
+        uses: actions/cache/restore@v4
+        with:
+          path: .pid-cache/alerts.json
+          key: pid-alerts-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: pid-alerts-
       - name: Fetch PID alerts
-        run: python3 scripts/fetch_alerts.py web/alerts.json || echo '{"items":[],"errors":["fetch failed"]}' > web/alerts.json
+        run: |
+          python3 scripts/fetch_alerts.py .pid-cache/alerts.json
+          cp .pid-cache/alerts.json web/alerts.json
+      - name: Save PID alerts
+        uses: actions/cache/save@v4
+        with:
+          path: .pid-cache/alerts.json
+          key: pid-alerts-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Konfigurace API pro stránku:
       #  - repo proměnná WORKER_URL (Settings → Variables) → stránka volá Cloudflare Worker
