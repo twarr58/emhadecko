@@ -205,3 +205,19 @@ test("odjezdy a příjezdy uzlu: povolené parametry projdou, ostatní 400, Work
   ]) assert.equal((await req(q)).status, 400, q);
   assert.equal(calls.length, 1);
 });
+
+test("po 429 se čekající požadavek neodešle na Golemio", async () => {
+  const pending = [];
+  globalThis.fetch = () => new Promise((resolve) => pending.push(resolve));
+  const requests = Array.from({ length: 5 }, (_, i) =>
+    req(`/v2/public/vehiclepositions/queued-${i}?scopes=info`));
+  assert.equal(pending.length, 4);
+  pending[0](new Response(null, { status: 429 }));
+  for (const resolve of pending.slice(1)) resolve(Response.json({ ok: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pending.length, 4);
+  const responses = await Promise.all(requests);
+  assert.equal(responses[0].status, 429);
+  assert.equal(responses[4].status, 429);
+  assert.equal(responses[4].headers.get("X-Limit-Source"), "upstream");
+});
