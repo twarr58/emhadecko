@@ -1559,6 +1559,7 @@
   const $alertsBtn = document.getElementById("alerts-btn");
   let alerts = [];
   let alertsGenerated = null;
+  let alertsIncomplete = false;
 
   const isActive = (a, now = Date.now()) => (!a.from || a.from * 1000 <= now) && (!a.to || a.to * 1000 >= now);
   const lineKey = (l) => String(l).trim().toUpperCase();
@@ -1575,16 +1576,17 @@
       if (!res.ok) return;
       const data = await res.json();
       alerts = Array.isArray(data.items) ? data.items : [];
+      alertsIncomplete = Array.isArray(data.errors) && data.errors.length > 0;
       alertsGenerated = data.generated ? new Date(data.generated * 1000) : null;
     } catch { return; }
     const active = alerts.filter((a) => isActive(a));
     const incidents = active.filter((a) => a.kind === "mimoradnost").length;
-    $alertsBtn.hidden = !alerts.length;
+    $alertsBtn.hidden = !alerts.length && !alertsIncomplete;
     $alertsBtn.classList.toggle("has-incident", incidents > 0);
     const plural = (n, one, few, many) => `${n} ${n === 1 ? one : n > 1 && n < 5 ? few : many}`;
     const closures = active.length - incidents;
     $alertsBtn.replaceChildren(
-      h("span", { class: "t" }, h("span", { class: "ic" }, "⚠"), " Omezení provozu"),
+      h("span", { class: "t" }, h("span", { class: "ic" }, "⚠"), alertsIncomplete ? " Omezení provozu · neúplná data" : " Omezení provozu"),
       h("span", { class: "pills" },
         incidents ? h("span", { class: "inc" }, plural(incidents, "mimořádnost", "mimořádnosti", "mimořádností")) : null,
         h("span", { class: "vy" }, plural(closures, "výluka", "výluky", "výluk"))));
@@ -1626,11 +1628,12 @@
         close),
       h("div", { class: "al-note" },
         lineFilter ? `Jen pro linky: ${[...lineFilter].join(", ")} (podle filtru linek)` : "Tip: filtrem linek v panelu zúžíš výpis na své linky.",
-        alertsGenerated ? h("span", null, ` · aktualizováno ${alertsGenerated.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}`) : null),
+        alertsGenerated ? h("span", null, ` · ${alertsIncomplete ? "poslední kontrola" : "aktualizováno"} ${alertsGenerated.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}`) : null),
+      alertsIncomplete ? h("div", { class: "vc-msg" }, "Některé údaje se nepodařilo obnovit. Zobrazené informace mohou být zastaralé nebo neúplné.") : null,
       ...section("Mimořádnosti", incidents, "inc"),
       ...section("Aktuální výluky", current),
       ...section("Připravované (7 dní)", upcoming, "up"),
-      !incidents.length && !current.length && !upcoming.length ? h("div", { class: "vc-msg" }, "Nic nenalezeno.") : null,
+      !alertsIncomplete && !incidents.length && !current.length && !upcoming.length ? h("div", { class: "vc-msg" }, "Nic nenalezeno.") : null,
       h("footer", { class: "vc-foot" }, "Zdroj: RSS pid.cz")));
   }
 

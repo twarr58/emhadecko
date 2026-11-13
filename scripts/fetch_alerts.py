@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 FEEDS = {
     "mimoradnost": "https://pid.cz/feed/rss-mimoradnosti/",
@@ -55,7 +56,10 @@ def num(el: ET.Element, tag: str) -> int | None:
 
 def parse(kind: str, xml: bytes, now: int) -> list[dict]:
     out = []
-    for it in ET.fromstring(xml).iter("item"):
+    channel = ET.fromstring(xml).find("channel")
+    if channel is None:
+        raise ValueError("missing RSS channel")
+    for it in channel.findall("item"):
         content = it.findtext(CONTENT) or ""
         desc = it.findtext("description") or ""
         start, end = num(it, "dateFrom"), num(it, "dateTo")
@@ -83,14 +87,24 @@ def parse(kind: str, xml: bytes, now: int) -> list[dict]:
 
 def main(path: str) -> int:
     now = int(time.time())
+    output = Path(path)
+    try:
+        previous = json.loads(output.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        previous = {}
     items, errors = [], []
     for kind, url in FEEDS.items():
         try:
             items += parse(kind, fetch(url), now)
         except Exception as e:  # noqa: BLE001 — jeden rozbitý feed nesmí shodit deploy
             errors.append(f"{kind}: {e}")
-    with open(path, "w", encoding="utf-8") as f:
+            items.extend(item for item in previous.get("items", [])
+                         if item["kind"] == kind and (item["to"] is None or item["to"] >= now))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp = output.with_suffix(".tmp")
+    with temp.open("w", encoding="utf-8") as f:
         json.dump({"generated": now, "items": items, "errors": errors}, f, ensure_ascii=False, separators=(",", ":"))
+    temp.replace(output)
     print(f"{len(items)} items, errors: {errors or 'none'}")
     return 0
 
