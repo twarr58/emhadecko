@@ -392,3 +392,8 @@ dialog menu { padding: 0; margin: 10px 0 0; text-align: right; }
 .sp-next { margin-top: 6px; color: var(--fg); }
 #line-note { margin-top: 4px; font-size: 11px; color: var(--muted); }
 #zones-legend .here { font-weight: 700; color: #1d4ed8; }
+
+/* dotyk: větší plocha pro ťuknutí na štítek vozidla a zastávku na znamení */
+@media (pointer: coarse) {
+  .veh .badge::after, .rqm::after { content: ""; position: absolute; inset: -10px; }
+}

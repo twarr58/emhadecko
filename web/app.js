@@ -37,6 +37,10 @@
 
   // ---------- mapa ----------
   const map = L.map("map", { zoomControl: true }).setView([50.0835, 14.4341], 13);
+  // prst se při ťuknutí skoro vždy o pár px posune; Leaflet to při výchozích 3 px bere jako tah mapou
+  // a klik na vozidlo/zastávku zahodí → na dotykových zařízeních tolerujeme víc
+  const TOUCH = L.Browser.touch && (!window.matchMedia || matchMedia("(pointer: coarse)").matches);
+  if (map.dragging && map.dragging._draggable) map.dragging._draggable.options.clickTolerance = TOUCH ? 12 : 3;
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · data <a href="https://golemio.cz">Golemio</a> / PID',
@@ -180,7 +184,7 @@
   const LABEL_ZOOM = 14; // od tohoto zoomu štítky s číslem linky
   const ANIM_ZOOM = 12; // pod tímto zoomem se pohyb neanimuje (není vidět), jen se přepíše poloha
 
-  const dotRenderer = L.canvas({ padding: 0.3, tolerance: 6 });
+  const dotRenderer = L.canvas({ padding: 0.3, tolerance: TOUCH ? 14 : 6 });
 
   /**
    * @typedef {{id: string, props: object, pos: L.LatLng, from: L.LatLng, to: L.LatLng, t0: number, dur: number,
