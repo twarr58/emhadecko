@@ -19,7 +19,7 @@ jobs:
         working-directory: worker
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm test
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v7
       # Potřebné secrets repa: CLOUDFLARE_API_TOKEN (šablona "Edit Cloudflare Workers"),
       # CLOUDFLARE_ACCOUNT_ID a GOLEMIO_API_KEY (ten se uloží jako secret Workeru).
-      - uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
